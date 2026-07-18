@@ -46,6 +46,8 @@ export async function GET(_req: IncomingMessage, res: ServerResponse): Promise<v
             processedSources: scriptIndex.processedSources,
             skippedSources: scriptIndex.skippedSources,
             sourcesToMap: scriptIndex.sourcesToMap,
+            sourceGap: scriptIndex.sourceGap,
+            sourceIndexComplete: scriptIndex.sourceIndexComplete,
           },
           semanticIndex,
         };

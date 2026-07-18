@@ -1,6 +1,10 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { loadSemanticSettings, validateSemanticSettings } from "../../../semantic/settings.js";
+import {
+  semanticIndexReadyMessage,
+  semanticPartialIndexWarning,
+} from "../../../semantic/index-status.js";
 import { semanticIndexCodebase, semanticSearchScripts, type SemanticSearchOutput } from "../../../semantic/vector-index.js";
 import { clientStampPrefix, toolTextResponse, type ToolTextResponse } from "../../factory.js";
 import { isSecondaryRelay, relayToolToApi } from "../../factory.js";
@@ -16,21 +20,17 @@ function formatSemanticResults(
   query: string,
   output: SemanticSearchOutput
 ): string {
-  const { results, chunkCount, embeddedChunks, isPartialIndex } = output;
+  const { results, chunkCount, embeddedChunks, sourceIndexComplete, isPartialIndex } = output;
 
   const header =
     `${results.length} semantic ${results.length === 1 ? "match" : "matches"} ` +
     `for "${query}" across ${chunkCount} ${chunkCount === 1 ? "chunk" : "chunks"}`;
 
   const parts: string[] = [];
-
-  if (isPartialIndex) {
-    const pct = chunkCount > 0 ? Math.round((embeddedChunks / chunkCount) * 100) : 0;
-    parts.push(
-      `WARNING: The codebase is NOT fully indexed. Only ${embeddedChunks}/${chunkCount} chunks (${pct}%) have embeddings. ` +
-      `Results may be incomplete or miss relevant matches. Run a full semantic index from the MCP dashboard to get complete results.`
-    );
-  }
+  const warning = isPartialIndex
+    ? semanticPartialIndexWarning({ chunkCount, embeddedChunks, sourceIndexComplete })
+    : undefined;
+  if (warning) parts.push(warning);
 
   parts.push(header);
 
@@ -122,13 +122,16 @@ export default function register(server: McpServer): void {
 
       try {
         if (indexOnly || requireFullIndex) {
-          const { chunkCount, embeddedChunks } = await semanticIndexCodebase(
+          const { chunkCount, embeddedChunks, sourceIndexComplete } = await semanticIndexCodebase(
             indexResult.index,
             settings
           );
           if (indexOnly) {
             return toolTextResponse(
-              `Semantic index ready: ${embeddedChunks}/${chunkCount} chunks embedded.`,
+              semanticIndexReadyMessage(
+                { chunkCount, embeddedChunks, sourceIndexComplete },
+                indexResult.index
+              ),
               { maxOutputChars }
             );
           }

@@ -1140,10 +1140,10 @@ function updateOverview() {
 
     const sync = c.scriptSync || { mappedSources: 0, sourcesToMap: 0, hasFinishedMapping: false };
     const mapped = Number(sync.mappedSources) || 0;
-    const processed = Number(sync.processedSources) || mapped;
-    const skipped = Number(sync.skippedSources) || Math.max(0, processed - mapped);
     const total = Number(sync.sourcesToMap) || 0;
+    const sourceGap = Math.max(0, Number(sync.sourceGap) || 0);
     const syncDone = sync.hasFinishedMapping === true;
+    const hasCompleteSourceSync = sync.sourceIndexComplete === true;
     const ssv = $('scriptsSyncCount'); if (ssv) ssv.textContent = `${mapped}/${total}`;
     
     // Update Sync Progress
@@ -1153,7 +1153,7 @@ function updateOverview() {
 
     const sss = $('scriptsSyncStatus');
     if (sss) {
-        sss.textContent = syncDone ? (skipped > 0 ? 'Synced (skips)' : 'Synced') : 'Syncing';
+        sss.textContent = syncDone ? (sourceGap > 0 ? 'Synced (source gaps)' : 'Synced') : 'Syncing';
         sss.className = 'scripts-sync-badge' + (syncDone ? ' scripts-sync-badge--synced' : '');
     }
 
@@ -1183,8 +1183,10 @@ function updateOverview() {
     if (!semanticIndexJobId && semanticIndexStatus) {
         if (mapped === 0) {
             semanticIndexStatus.textContent = 'Waiting for scripts';
-        } else if (isFullyIndexed && syncDone) {
+        } else if (isFullyIndexed && hasCompleteSourceSync) {
             semanticIndexStatus.textContent = 'Codebase fully indexed';
+        } else if (isFullyIndexed && syncDone && sourceGap > 0) {
+            semanticIndexStatus.textContent = `Indexed received scripts · ${sourceGap} source ${sourceGap === 1 ? 'gap' : 'gaps'}`;
         } else {
             semanticIndexStatus.textContent = syncDone
                 ? `Ready to index ${mapped} scripts`

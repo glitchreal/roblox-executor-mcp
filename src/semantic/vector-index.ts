@@ -478,6 +478,7 @@ export interface SemanticSearchOutput {
   results: SemanticSearchResult[];
   chunkCount: number;
   embeddedChunks: number;
+  sourceIndexComplete: boolean;
   isPartialIndex: boolean;
 }
 
@@ -609,11 +610,13 @@ export async function semanticSearchScripts(
     b.denseScore - a.denseScore ||
     b.lexicalScore - a.lexicalScore
   );
+  const sourceIndexComplete = index.sourceIndexComplete;
   return {
     results: diversifyResults(scored, Math.max(0, Math.floor(limit))),
     chunkCount: chunks.length,
     embeddedChunks: finalEmbeddedCount,
-    isPartialIndex: finalEmbeddedCount < chunks.length,
+    sourceIndexComplete,
+    isPartialIndex: finalEmbeddedCount < chunks.length || !sourceIndexComplete,
   };
 }
 
@@ -621,7 +624,12 @@ export async function semanticIndexCodebase(
   index: ScriptSourceIndex,
   settings: SemanticSettings,
   onProgress?: (progress: SemanticSearchProgress) => void
-): Promise<{ chunkCount: number; embeddedChunks: number }> {
+): Promise<{
+  chunkCount: number;
+  embeddedChunks: number;
+  sourceIndexComplete: boolean;
+  isPartialIndex: boolean;
+}> {
   const chunks = buildChunks(index.scripts);
   onProgress?.({
     message: index.hasFinishedMapping
@@ -635,7 +643,14 @@ export async function semanticIndexCodebase(
   const session = getOrCreateSession(key);
 
   await embedMissingChunks(session, key, chunks, settings, onProgress);
-  return getSemanticIndexStats(index, settings);
+  const stats = getSemanticIndexStats(index, settings);
+  const sourceIndexComplete = index.sourceIndexComplete;
+  return {
+    chunkCount: stats.chunkCount,
+    embeddedChunks: stats.embeddedChunks,
+    sourceIndexComplete,
+    isPartialIndex: stats.embeddedChunks < stats.chunkCount || !sourceIndexComplete,
+  };
 }
 
 export function clearSemanticIndexForClient(clientId: string): void {

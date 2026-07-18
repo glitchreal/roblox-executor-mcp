@@ -37,6 +37,9 @@ export async function POST(req: IncomingMessage, res: ServerResponse): Promise<v
         skippedSources: index.skippedSources,
         sourcesToMap: index.sourcesToMap,
         hasFinishedMapping: index.hasFinishedMapping,
+        sourceGap: index.sourceGap,
+        sourceIndexComplete: index.sourceIndexComplete,
+        acceptedMappingRevision: index.acceptedMappingRevision,
       })
     );
   } catch {

@@ -650,6 +650,20 @@ async function handleApi(req, res, url) {
     return true;
   }
 
+  if (pathname === "/decompile-plan") {
+    const providerId = mockDecompilerSettings.providerOrder.find(
+      (id) => mockDecompilerSettings.providers[id]?.enabled === true,
+    ) ?? null;
+    json(res, 200, { providerId, ttlMs: 1000 });
+    return true;
+  }
+
+  if (pathname === "/decompiler-observations") {
+    await readJson(req);
+    json(res, 200, { ok: true });
+    return true;
+  }
+
   if (pathname === "/api/decompiler-settings/setup") {
     if (req.method === "GET") {
       const provider = url.searchParams.get("provider") || "";
@@ -817,8 +831,13 @@ async function handleApi(req, res, url) {
 
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url || "/", `http://${host}:${port}`);
+  const connectorRoute = new Set([
+    "/script-source-cache",
+    "/decompile-plan",
+    "/decompiler-observations",
+  ]).has(url.pathname);
 
-  if (url.pathname.startsWith("/api/")) {
+  if (url.pathname.startsWith("/api/") || connectorRoute) {
     const handled = await handleApi(req, res, url);
     if (!handled) json(res, 404, { error: "Mock API route not found" });
     return;

@@ -12,6 +12,10 @@ import {
   getScriptSourceIndex,
 } from "../../../bridge/handlers/shared/script-source-store.js";
 import { loadSemanticSettings, validateSemanticSettings } from "../../../semantic/settings.js";
+import {
+  semanticIndexReadyMessage,
+  semanticPartialIndexWarning,
+} from "../../../semantic/index-status.js";
 import { semanticIndexCodebase, semanticSearchScripts } from "../../../semantic/vector-index.js";
 import {
   completeProgressJob,
@@ -89,16 +93,14 @@ function formatSemanticSearchResult(
   searchResults: Awaited<ReturnType<typeof semanticSearchScripts>>["results"],
   chunkCount: number,
   embeddedChunks: number,
+  sourceIndexComplete: boolean,
   isPartialIndex: boolean
 ): string {
   const parts: string[] = [];
-
-  if (isPartialIndex) {
-    const pct = chunkCount > 0 ? Math.round((embeddedChunks / chunkCount) * 100) : 0;
-    parts.push(
-      `WARNING: The codebase is NOT fully indexed. Only ${embeddedChunks}/${chunkCount} chunks (${pct}%) have embeddings. Results may be incomplete.`
-    );
-  }
+  const warning = isPartialIndex
+    ? semanticPartialIndexWarning({ chunkCount, embeddedChunks, sourceIndexComplete })
+    : undefined;
+  if (warning) parts.push(warning);
 
   const header = `${searchResults.length} match(es) for "${query}" across ${chunkCount} chunks`;
   parts.push(header);
@@ -116,11 +118,6 @@ function formatSemanticSearchResult(
 
   return parts.join("\n\n");
 }
-
-function formatSemanticIndexResult(chunkCount: number, embeddedChunks: number): string {
-  return `Semantic index ready: ${embeddedChunks}/${chunkCount} chunks embedded.`;
-}
-
 
 export async function POST(req: IncomingMessage, res: ServerResponse): Promise<void> {
   try {
@@ -246,13 +243,19 @@ export async function POST(req: IncomingMessage, res: ServerResponse): Promise<v
       void (async () => {
         try {
           if (indexOnly || requireFullIndex) {
-            const { chunkCount, embeddedChunks } = await semanticIndexCodebase(
+            const { chunkCount, embeddedChunks, sourceIndexComplete } = await semanticIndexCodebase(
               index,
               settings,
               (progress) => updateProgressJob(job.id, progress)
             );
             if (indexOnly) {
-              completeProgressJob(job.id, formatSemanticIndexResult(chunkCount, embeddedChunks));
+              completeProgressJob(
+                job.id,
+                semanticIndexReadyMessage(
+                  { chunkCount, embeddedChunks, sourceIndexComplete },
+                  index
+                )
+              );
               return;
             }
           }
@@ -274,7 +277,14 @@ export async function POST(req: IncomingMessage, res: ServerResponse): Promise<v
           completeProgressJob(
             job.id,
             resultText(
-              formatSemanticSearchResult(query, output.results, output.chunkCount, output.embeddedChunks, output.isPartialIndex),
+              formatSemanticSearchResult(
+                query,
+                output.results,
+                output.chunkCount,
+                output.embeddedChunks,
+                output.sourceIndexComplete,
+                output.isPartialIndex
+              ),
               params,
               "Rerun semantic-search-scripts with a lower limit or higher minScore."
             )

@@ -44,7 +44,6 @@ interface DecompilerProviderHealthState {
   throughputSamples?: number;
   throughputStartedAtMs?: number;
   throughputLastAtMs?: number;
-  throughputMarkedSlow: boolean;
   slowCount: number;
   timeoutCount: number;
   failureCount: number;
@@ -52,11 +51,13 @@ interface DecompilerProviderHealthState {
   cooldownUntilMs?: number;
   rateLimitedUntilMs?: number;
   updatedAtMs: number;
+  observationSessionId?: string;
+  observationSessionStartedAt?: number;
+  observationRevision?: number;
 }
 
-const healthByProvider = new Map<DecompilerProviderId, DecompilerProviderHealthState>();
+const healthByClientAndProvider = new Map<string, DecompilerProviderHealthState>();
 const THROUGHPUT_IDLE_RESET_MS = 2000;
-const THROUGHPUT_SLOW_MIN_SAMPLES = 24;
 
 function isProviderId(value: unknown): value is DecompilerProviderId {
   return (
@@ -68,6 +69,12 @@ function isProviderId(value: unknown): value is DecompilerProviderId {
 function cleanNumber(value: unknown): number | undefined {
   if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
   return Math.max(0, Math.round(value));
+}
+
+function cleanNonNegativeInteger(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0
+    ? value
+    : undefined;
 }
 
 function cleanStatus(value: unknown): DecompilerProviderHealthStatus {
@@ -96,20 +103,30 @@ function futureMs(remainingMs: unknown, now: number): number | undefined {
   return now + duration;
 }
 
-function getProviderHealth(id: DecompilerProviderId): DecompilerProviderHealthState {
-  let health = healthByProvider.get(id);
+function healthKey(id: DecompilerProviderId, clientId: string): string {
+  // Executor built-ins are client capabilities. Hosted/server providers are
+  // shared infrastructure and retain one global health circuit.
+  const scope = id === "builtin" ? clientId : "server";
+  return `${scope}\0${id}`;
+}
+
+function getProviderHealth(
+  id: DecompilerProviderId,
+  clientId = "server"
+): DecompilerProviderHealthState {
+  const key = healthKey(id, clientId);
+  let health = healthByClientAndProvider.get(key);
   if (!health) {
     health = {
       id,
-      clientId: "server",
+      clientId,
       status: "healthy",
-      throughputMarkedSlow: false,
       slowCount: 0,
       timeoutCount: 0,
       failureCount: 0,
       updatedAtMs: Date.now(),
     };
-    healthByProvider.set(id, health);
+    healthByClientAndProvider.set(key, health);
   }
   return health;
 }
@@ -177,14 +194,13 @@ export function reportDecompilerHealth(clientId: string, providers: unknown): vo
     const item = raw as Record<string, unknown>;
     if (!isProviderId(item.id)) continue;
 
-    const health = getProviderHealth(item.id);
+    const health = getProviderHealth(item.id, cleanClientId);
     health.clientId = cleanClientId;
     health.status = cleanStatus(item.status);
     health.latencyMs = cleanNumber(item.latencyMs);
     health.throughputPerSecond = cleanNumber(item.throughputPerSecond);
     health.throughputWindowMs = cleanNumber(item.throughputWindowMs);
     health.throughputSamples = cleanNumber(item.throughputSamples);
-    health.throughputMarkedSlow = health.status === "slow";
     health.slowCount = cleanNumber(item.slowCount) ?? 0;
     health.timeoutCount = cleanNumber(item.timeoutCount) ?? 0;
     health.lastError = cleanString(item.lastError);
@@ -196,12 +212,13 @@ export function reportDecompilerHealth(clientId: string, providers: unknown): vo
 
 export function shouldSkipDecompilerProvider(
   id: DecompilerProviderId,
-  runtime: DecompilerRuntimeSettings
+  runtime: DecompilerRuntimeSettings,
+  clientId = "server"
 ): { skip: boolean; reason?: string } {
   if (runtime.adaptiveFallback === false) return { skip: false };
 
   const now = Date.now();
-  const health = getProviderHealth(id);
+  const health = getProviderHealth(id, clientId);
   if ((health.rateLimitedUntilMs ?? 0) > now) {
     return {
       skip: true,
@@ -219,9 +236,10 @@ export function shouldSkipDecompilerProvider(
 }
 
 export function getDecompilerProviderStatus(
-  id: DecompilerProviderId
+  id: DecompilerProviderId,
+  clientId = "server"
 ): DecompilerProviderHealthStatus {
-  return providerRuntimeStatus(getProviderHealth(id), Date.now());
+  return providerRuntimeStatus(getProviderHealth(id, clientId), Date.now());
 }
 
 function resetThroughputWindow(health: DecompilerProviderHealthState, now: number): void {
@@ -230,14 +248,12 @@ function resetThroughputWindow(health: DecompilerProviderHealthState, now: numbe
   health.throughputSamples = 0;
   health.throughputWindowMs = undefined;
   health.throughputPerSecond = undefined;
-  health.throughputMarkedSlow = false;
 }
 
 function recordSuccessThroughput(
   health: DecompilerProviderHealthState,
-  now: number,
-  slowAfterMs: number
-): { isSlow: boolean; newlySlow: boolean } {
+  now: number
+): void {
   if (
     health.throughputLastAtMs === undefined ||
     now - health.throughputLastAtMs > THROUGHPUT_IDLE_RESET_MS
@@ -245,7 +261,6 @@ function recordSuccessThroughput(
     resetThroughputWindow(health, now);
   }
 
-  const wasMarkedSlow = health.throughputMarkedSlow;
   health.throughputLastAtMs = now;
   health.throughputSamples = (health.throughputSamples ?? 0) + 1;
 
@@ -255,18 +270,80 @@ function recordSuccessThroughput(
     health.throughputPerSecond = Math.round((health.throughputSamples / (windowMs / 1000)) * 10) / 10;
   }
 
-  const isSlow =
-    health.throughputSamples >= THROUGHPUT_SLOW_MIN_SAMPLES &&
-    windowMs >= slowAfterMs;
+}
 
-  if (isSlow) {
-    health.throughputMarkedSlow = true;
+export function recordDecompilerProviderObservation(options: {
+  id: DecompilerProviderId;
+  runtime: DecompilerRuntimeSettings;
+  clientId?: string;
+  latencyMs?: number;
+  successCount?: number;
+  throughputPerSecond?: number;
+  throughputWindowMs?: number;
+  throughputSamples?: number;
+  errorMessage?: string;
+  timedOut?: boolean;
+  observationSessionId?: string;
+  observationSessionStartedAt?: number;
+  observationRevision?: number;
+  beginObservationSession?: boolean;
+}): boolean {
+  const clientId = options.clientId ?? "server";
+  const errorMessage = cleanString(options.errorMessage);
+  const successCount = cleanNumber(options.successCount);
+  const latencyMs = cleanNumber(options.latencyMs);
+  const isFailure = errorMessage !== undefined;
+  const isSuccess = (successCount ?? 0) > 0 && latencyMs !== undefined;
+  if (!isFailure && !isSuccess) return false;
+
+  const health = getProviderHealth(options.id, clientId);
+  if (options.observationSessionId !== undefined || options.observationRevision !== undefined) {
+    const sessionId = cleanString(options.observationSessionId, 160);
+    const revision = cleanNonNegativeInteger(options.observationRevision);
+    const startedAt = cleanNonNegativeInteger(options.observationSessionStartedAt);
+    if (!sessionId || revision === undefined) return false;
+
+    if (health.observationSessionId !== sessionId) {
+      if (options.beginObservationSession !== true) return false;
+      if (
+        startedAt === undefined ||
+        (health.observationSessionStartedAt !== undefined &&
+          startedAt <= health.observationSessionStartedAt)
+      ) {
+        return false;
+      }
+      health.observationSessionId = sessionId;
+      health.observationSessionStartedAt = startedAt;
+      health.observationRevision = -1;
+    }
+    if (revision <= (health.observationRevision ?? -1)) return false;
+    health.observationRevision = revision;
   }
 
-  return {
-    isSlow,
-    newlySlow: isSlow && !wasMarkedSlow,
-  };
+  if (isFailure) {
+    recordDecompilerProviderFailure({
+      id: options.id,
+      errorMessage: errorMessage!,
+      runtime: options.runtime,
+      timedOut: options.timedOut,
+      latencyMs,
+      clientId: options.clientId,
+    });
+    return true;
+  }
+
+  recordDecompilerProviderSuccess(
+    options.id,
+    latencyMs!,
+    options.runtime,
+    options.clientId
+  );
+
+  const updatedHealth = getProviderHealth(options.id, clientId);
+  updatedHealth.throughputPerSecond = cleanNumber(options.throughputPerSecond);
+  updatedHealth.throughputWindowMs = cleanNumber(options.throughputWindowMs);
+  updatedHealth.throughputSamples = cleanNumber(options.throughputSamples);
+  return true;
 }
 
 export function recordDecompilerProviderSuccess(
@@ -276,7 +353,7 @@ export function recordDecompilerProviderSuccess(
   clientId = "server"
 ): void {
   const now = Date.now();
-  const health = getProviderHealth(id);
+  const health = getProviderHealth(id, clientId);
   const slowAfterMs = runtime.slowAfterMs || 6000;
   const cooldownMs = runtime.cooldownMs || 60000;
 
@@ -288,18 +365,11 @@ export function recordDecompilerProviderSuccess(
   health.rateLimitedUntilMs = undefined;
   health.updatedAtMs = now;
 
-  const throughput = recordSuccessThroughput(health, now, slowAfterMs);
-  const isSlow = latencyMs >= slowAfterMs || throughput.isSlow;
+  recordSuccessThroughput(health, now);
+  const isSlow = latencyMs >= slowAfterMs;
   if (isSlow) {
-    if (latencyMs >= slowAfterMs || throughput.newlySlow) {
-      health.slowCount += 1;
-    }
+    health.slowCount += 1;
     health.status = "slow";
-    if (throughput.isSlow && latencyMs < slowAfterMs) {
-      const rate = health.throughputPerSecond?.toFixed(1) ?? "?";
-      const seconds = Math.round((health.throughputWindowMs ?? 0) / 100) / 10;
-      health.lastError = `Sustained throughput is slow: ${rate} scripts/s over ${seconds}s.`;
-    }
     if (
       runtime.adaptiveFallback !== false &&
       health.slowCount >= (runtime.slowSuccessLimit || 3)
@@ -324,7 +394,7 @@ export function recordDecompilerProviderFailure(options: {
   clientId?: string;
 }): void {
   const now = Date.now();
-  const health = getProviderHealth(options.id);
+  const health = getProviderHealth(options.id, options.clientId || "server");
   const cooldownMs = options.runtime.cooldownMs || 60000;
 
   health.clientId = options.clientId || "server";
@@ -354,13 +424,22 @@ export function recordDecompilerProviderFailure(options: {
   }
 }
 
-export function getDecompilerHealthSnapshot(): {
+export function clearDecompilerHealthForClient(clientId: string): void {
+  healthByClientAndProvider.delete(healthKey("builtin", clientId));
+}
+
+export function getDecompilerHealthSnapshot(clientId?: string): {
   providers: Partial<Record<DecompilerProviderId, DecompilerProviderHealthSnapshot>>;
 } {
   const now = Date.now();
+  const selectedByProvider = new Map<DecompilerProviderId, DecompilerProviderHealthState>();
+  for (const health of healthByClientAndProvider.values()) {
+    if (health.id === "builtin" && health.clientId !== (clientId ?? "server")) continue;
+    selectedByProvider.set(health.id, health);
+  }
   return {
     providers: Object.fromEntries(
-      [...healthByProvider.entries()].map(([id, health]) => [id, toSnapshot(health, now)])
+      [...selectedByProvider.entries()].map(([id, health]) => [id, toSnapshot(health, now)])
     ) as Partial<Record<DecompilerProviderId, DecompilerProviderHealthSnapshot>>,
   };
 }

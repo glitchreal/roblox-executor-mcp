@@ -3,9 +3,11 @@ import { WebSocket } from "ws";
 import { HTTP_POLL_TIMEOUT } from "../../../config.js";
 import type { RobloxClient } from "../../types.js";
 import { clearScriptSourceIndex } from "./script-source-store.js";
+import { clearDecompilerHealthForClient } from "../../../decompiler/health.js";
 
 const clientRegistry: Map<string, RobloxClient> = new Map();
 const wsToClientId: Map<WebSocket, string> = new Map();
+const HTTP_CLIENT_RETENTION_MS = HTTP_POLL_TIMEOUT * 2;
 
 let activeClientId: string | undefined = undefined;
 let activeClientIsRemote = false;
@@ -16,6 +18,31 @@ function isClientActive(entry: RobloxClient): boolean {
   }
   return Date.now() - entry.lastHttpPoll < HTTP_POLL_TIMEOUT;
 }
+
+function removeClient(clientId: string, reason: string): void {
+  const entry = clientRegistry.get(clientId);
+  if (!entry) return;
+  if (entry.ws) wsToClientId.delete(entry.ws);
+  entry.pendingPollResolve?.([]);
+  clientRegistry.delete(clientId);
+  if (!activeClientIsRemote && activeClientId === clientId) activeClientId = undefined;
+  clearScriptSourceIndex(clientId);
+  clearDecompilerHealthForClient(clientId);
+  console.error(`[Registry] Client ${reason}: ${clientId}`);
+}
+
+export function cleanupInactiveHttpClients(now = Date.now()): number {
+  let removed = 0;
+  for (const [clientId, entry] of clientRegistry) {
+    if (entry.transport !== "http" || now - entry.lastHttpPoll < HTTP_CLIENT_RETENTION_MS) continue;
+    removeClient(clientId, "expired");
+    removed += 1;
+  }
+  return removed;
+}
+
+const cleanupTimer = setInterval(cleanupInactiveHttpClients, HTTP_POLL_TIMEOUT);
+cleanupTimer.unref();
 
 function findClientBySessionId(sessionId: string): RobloxClient | undefined {
   for (const entry of clientRegistry.values()) {
@@ -53,7 +80,7 @@ export function setActiveClientId(clientId: string, options: { remote?: boolean 
 }
 
 export function resetRegistry(): void {
-  clientRegistry.clear();
+  for (const clientId of [...clientRegistry.keys()]) removeClient(clientId, "reset");
   wsToClientId.clear();
   activeClientId = undefined;
   activeClientIsRemote = false;
@@ -128,15 +155,7 @@ export function registerClient(info: {
 }
 
 export function unregisterClient(clientId: string): void {
-  const entry = clientRegistry.get(clientId);
-  if (entry?.ws) {
-    wsToClientId.delete(entry.ws);
-  }
-  entry?.pendingPollResolve?.([]);
-  clientRegistry.delete(clientId);
-  if (!activeClientIsRemote && activeClientId === clientId) activeClientId = undefined;
-  clearScriptSourceIndex(clientId);
-  console.error(`[Registry] Client unregistered: ${clientId}`);
+  removeClient(clientId, "unregistered");
 }
 
 export function getClientById(clientId: string): RobloxClient | undefined {

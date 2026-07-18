@@ -72,6 +72,9 @@ export const DECOMPILER_SETTINGS_PATH = path.join(
   DECOMPILER_CONFIG_DIR,
   "decompiler-settings.json"
 );
+const DECOMPILER_SETTINGS_CACHE_MS = 1000;
+let decompilerSettingsCache: { settings: DecompilerSettings; expiresAt: number } | null = null;
+let decompilerSettingsLoadPromise: Promise<DecompilerSettings> | null = null;
 export const SHINY_LOCAL_ENDPOINT = "http://localhost:3000/luau/decompile";
 export const SHINY_HOSTED_ENDPOINT = "https://medal.upio.dev/decompile";
 
@@ -477,14 +480,32 @@ export function decompilerSettingsIssues(settings: DecompilerSettings): string[]
 }
 
 export async function loadDecompilerSettings(): Promise<DecompilerSettings> {
-  try {
-    const raw = await fs.readFile(DECOMPILER_SETTINGS_PATH, "utf8");
-    return normalizeSettings(JSON.parse(raw), DEFAULT_DECOMPILER_SETTINGS);
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code === "ENOENT") return cloneSettings(DEFAULT_DECOMPILER_SETTINGS);
-    throw error;
+  const now = Date.now();
+  if (decompilerSettingsCache && decompilerSettingsCache.expiresAt > now) {
+    return cloneSettings(decompilerSettingsCache.settings);
   }
+
+  if (!decompilerSettingsLoadPromise) {
+    decompilerSettingsLoadPromise = (async () => {
+      try {
+        const raw = await fs.readFile(DECOMPILER_SETTINGS_PATH, "utf8");
+        return normalizeSettings(JSON.parse(raw), DEFAULT_DECOMPILER_SETTINGS);
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code === "ENOENT") return cloneSettings(DEFAULT_DECOMPILER_SETTINGS);
+        throw error;
+      }
+    })().finally(() => {
+      decompilerSettingsLoadPromise = null;
+    });
+  }
+
+  const settings = await decompilerSettingsLoadPromise;
+  decompilerSettingsCache = {
+    settings: cloneSettings(settings),
+    expiresAt: Date.now() + DECOMPILER_SETTINGS_CACHE_MS,
+  };
+  return cloneSettings(settings);
 }
 
 export async function saveDecompilerSettings(
@@ -502,6 +523,11 @@ export async function saveDecompilerSettings(
     mode: 0o600,
   });
   await fs.chmod(DECOMPILER_SETTINGS_PATH, 0o600).catch(() => undefined);
+
+  decompilerSettingsCache = {
+    settings: cloneSettings(next),
+    expiresAt: Date.now() + DECOMPILER_SETTINGS_CACHE_MS,
+  };
 
   return next;
 }

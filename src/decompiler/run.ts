@@ -115,7 +115,8 @@ function cleanDisabledProviders(value: unknown[] | undefined): Set<DecompilerPro
 function orderProvidersForRequest(
   candidates: DecompilerProviderId[],
   runtime: DecompilerRuntimeSettings,
-  requestedProvider: DecompilerProviderId | null
+  requestedProvider: DecompilerProviderId | null,
+  clientId = "server"
 ): DecompilerProviderId[] {
   if (requestedProvider && candidates.includes(requestedProvider)) {
     return [requestedProvider, ...candidates.filter((id) => id !== requestedProvider)];
@@ -125,7 +126,7 @@ function orderProvidersForRequest(
   if (
     runtime.loadBalanceSlowProviders === false ||
     !firstCandidate ||
-    getDecompilerProviderStatus(firstCandidate) !== "slow"
+    getDecompilerProviderStatus(firstCandidate, clientId) !== "slow"
   ) {
     return candidates;
   }
@@ -373,35 +374,55 @@ function runtimeOrDefault(runtime: DecompilerSettings["runtime"]): DecompilerRun
   return runtime ?? DEFAULT_DECOMPILER_RUNTIME_SETTINGS;
 }
 
-export async function decompileBytecode(
+export interface ResolvedDecompilerProviders {
+  orderedProviders: DecompilerProviderId[];
+  skippedAttempts: string[];
+}
+
+export function resolveDecompilerProviders(
   settings: DecompilerSettings,
-  input: DecompileInput
-): Promise<DecompileResult> {
+  options: Pick<DecompileInput, "requestedProvider" | "disabledProviders" | "clientId"> = {}
+): ResolvedDecompilerProviders {
   const runtime = runtimeOrDefault(settings.runtime);
-  const bytecode = Buffer.from(input.bytecodeBase64, "base64");
-  const attempts: string[] = [];
-  const deadline = Date.now() + (runtime.overallTimeoutMs || 12000);
-  const disabledProviders = cleanDisabledProviders(input.disabledProviders);
-  const requestedProvider = isProviderId(input.requestedProvider) ? input.requestedProvider : null;
+  const disabledProviders = cleanDisabledProviders(options.disabledProviders);
+  const requestedProvider = isProviderId(options.requestedProvider)
+    ? options.requestedProvider
+    : null;
   const candidates: DecompilerProviderId[] = [];
+  const skippedAttempts: string[] = [];
 
   for (const id of settings.providerOrder) {
     const provider = settings.providers[id];
-    if (!provider?.enabled) continue;
-    if (disabledProviders.has(id)) continue;
+    if (!provider?.enabled || disabledProviders.has(id)) continue;
 
-    const skip = shouldSkipDecompilerProvider(id, runtime);
+    const skip = shouldSkipDecompilerProvider(id, runtime, options.clientId);
     if (skip.skip) {
-      attempts.push(`[${id}] skipped: ${skip.reason ?? "provider is temporarily unavailable"}`);
+      skippedAttempts.push(
+        `[${id}] skipped: ${skip.reason ?? "provider is temporarily unavailable"}`
+      );
       continue;
     }
 
     candidates.push(id);
   }
 
-  const orderedProviders = orderProvidersForRequest(candidates, runtime, requestedProvider);
+  return {
+    orderedProviders: orderProvidersForRequest(candidates, runtime, requestedProvider, options.clientId),
+    skippedAttempts,
+  };
+}
 
-  for (const id of orderedProviders) {
+export async function decompileBytecode(
+  settings: DecompilerSettings,
+  input: DecompileInput
+): Promise<DecompileResult> {
+  const runtime = runtimeOrDefault(settings.runtime);
+  const bytecode = Buffer.from(input.bytecodeBase64, "base64");
+  const resolved = resolveDecompilerProviders(settings, input);
+  const attempts: string[] = [...resolved.skippedAttempts];
+  const deadline = Date.now() + (runtime.overallTimeoutMs || 12000);
+
+  for (const id of resolved.orderedProviders) {
     const provider = settings.providers[id];
     if (!provider?.enabled) continue;
 
