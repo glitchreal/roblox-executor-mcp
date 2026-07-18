@@ -402,7 +402,7 @@ async function selectAutoexecTargetsOpenTui(targets) {
       const rightWidth = Math.max(26, viewportWidth - leftWidth - dividerWidth);
 
       const existingAutoexecRoot = renderer.root.getRenderable("autoexec-target-root");
-      if (existingAutoexecRoot) renderer.root.remove(existingAutoexecRoot);
+      if (existingAutoexecRoot) existingAutoexecRoot.destroy();
       renderer.root.add(
         Box(
           {
@@ -1876,7 +1876,7 @@ async function selectHarnessesOpenTui(initial) {
       const rightWidth = Math.max(24, viewportWidth - leftWidth - dividerWidth);
 
       const existingInstallerRoot = renderer.root.getRenderable("installer-root");
-      if (existingInstallerRoot) renderer.root.remove(existingInstallerRoot);
+      if (existingInstallerRoot) existingInstallerRoot.destroy();
       renderer.root.add(
         Box(
           {
@@ -2644,7 +2644,7 @@ async function askYesNoOpenTui(label, fallback) {
       const noActive = state.choice === "no";
 
       const existingYesNoRoot = renderer.root.getRenderable("yes-no-dialog-root");
-      if (existingYesNoRoot) renderer.root.remove(existingYesNoRoot);
+      if (existingYesNoRoot) existingYesNoRoot.destroy();
       renderer.root.add(
         Box(
           {
@@ -2812,7 +2812,7 @@ async function askChoiceOpenTui(label, options, fallbackKey) {
       const selected = options[state.index] || options[fallbackIndex] || options[0];
 
       const existingChoiceRoot = renderer.root.getRenderable("choice-dialog-root");
-      if (existingChoiceRoot) renderer.root.remove(existingChoiceRoot);
+      if (existingChoiceRoot) existingChoiceRoot.destroy();
       renderer.root.add(
         Box(
           {
@@ -2981,7 +2981,7 @@ async function askInputOpenTui(label, fallback = "") {
       const inputColor = state.value ? palette.text : palette.muted;
 
       const existingInputRoot = renderer.root.getRenderable("input-dialog-root");
-      if (existingInputRoot) renderer.root.remove(existingInputRoot);
+      if (existingInputRoot) existingInputRoot.destroy();
       renderer.root.add(
         Box(
           {
