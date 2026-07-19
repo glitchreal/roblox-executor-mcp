@@ -209,7 +209,22 @@ local MappingConcurrency = require("./mapping/concurrency").new(
     ScriptMappingPipeline,
     ScriptMappingWorkerCount
 )
-local MappingJobStatus = require("./mapping/job-status").new(ScriptMappingPipeline)
+local FailedScriptResyncInterval = math.max(
+    5,
+    math.min(tonumber(getgenv().MCP_FailedScriptResyncInterval) or 30, 600)
+)
+local FailedScriptResync = require("./mapping/failed-resync").new(ScriptMappingPipeline, {
+    IntervalSeconds = FailedScriptResyncInterval,
+    MaxDelaySeconds = math.max(FailedScriptResyncInterval, 300),
+    BatchSize = math.max(
+        1,
+        math.min(math.floor(tonumber(getgenv().MCP_FailedScriptResyncBatchSize) or 8), 32)
+    ),
+})
+local MappingJobStatus = require("./mapping/job-status").new(
+    ScriptMappingPipeline,
+    FailedScriptResync
+)
 local UploadClient = require("./mapping/upload-client")({
     ScriptMappingPipeline = ScriptMappingPipeline,
     HttpService = HttpService,
@@ -240,6 +255,7 @@ local MappingLifecycle = require("./mapping/lifecycle")({
     WorkerCount = ScriptMappingWorkerCount,
     Concurrency = MappingConcurrency,
     JobStatus = MappingJobStatus,
+    FailedResync = FailedScriptResync,
     UploadClient = UploadClient,
     DecompilerClient = DecompilerClient,
 })
@@ -248,6 +264,7 @@ local function PublishScriptMappingStatus()
     MappingJobStatus:Publish()
 end
 local StartScriptMapping = MappingLifecycle.StartScriptMapping
+local StartFailedScriptResync = MappingLifecycle.StartFailedScriptResync
 local ResetScriptMappingState = MappingLifecycle.ResetScriptMappingState
 local ResumeDeferredScriptMappings = MappingLifecycle.ResumeDeferredScriptMappings
 local GetScriptByDebugId = MappingLifecycle.GetScriptByDebugId
@@ -277,6 +294,7 @@ require("./bridge/runtime")({
     PublishScriptMappingStatus = PublishScriptMappingStatus,
     ResetScriptMappingState = ResetScriptMappingState,
     StartScriptMapping = StartScriptMapping,
+    StartFailedScriptResync = StartFailedScriptResync,
     ResumeDeferredScriptMappings = ResumeDeferredScriptMappings,
     GetScriptByDebugId = GetScriptByDebugId,
     DecompileScriptSource = DecompileScriptSource,

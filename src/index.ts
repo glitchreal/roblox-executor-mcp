@@ -6,9 +6,11 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { boot } from "./bridge/boot.js";
 import { registerAllTools } from "./tools/index.js";
 import { installServerLogCapture } from "./http/server-logs.js";
+import { registerLocalDecompilerLifetime } from "./decompiler/local-process-lifetime.js";
 
 // Install log capture early so all console.error calls are buffered.
 installServerLogCapture();
+registerLocalDecompilerLifetime();
 
 // Import config for CLI arg parsing and startup logging.
 import { SERVER_NAME } from "./config.js";

@@ -1,4 +1,3 @@
-import { spawn } from "node:child_process";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -14,6 +13,7 @@ import {
   type DecompilerProviderId,
 } from "../../../../decompiler/settings.js";
 import { readJsonBody } from "../../../body.js";
+import { startManagedLocalProvider } from "../../../../decompiler/local-provider-process.js";
 
 const SETUP_ROOT = path.join(DECOMPILER_CONFIG_DIR, "decompilers");
 const DECOMPILER_INSTALLS_PATH = path.join(DECOMPILER_CONFIG_DIR, "decompiler-installs.json");
@@ -187,23 +187,6 @@ async function findLocalPort(preferredPort: number, logs: string[]): Promise<num
   }
 
   throw new Error(`No available localhost port found from ${preferredPort} to ${preferredPort + PORT_SCAN_LIMIT - 1}.`);
-}
-
-function startDetached(
-  file: string,
-  args: string[],
-  options: { cwd: string; logPath: string }
-): void {
-  fs.mkdirSync(path.dirname(options.logPath), { recursive: true });
-  const stdout = fs.openSync(options.logPath, "a");
-  const stderr = fs.openSync(options.logPath, "a");
-  const child = spawn(file, args, {
-    cwd: options.cwd,
-    detached: true,
-    stdio: ["ignore", stdout, stderr],
-    windowsHide: true,
-  });
-  child.unref();
 }
 
 function shinyAsset(): { name: string; url: string } | null {
@@ -627,7 +610,13 @@ export async function ensureLocalDecompilerProviderRunning(
   }
 
   const args = runtime.args(port);
-  startDetached(installRecord.binaryPath, args, { cwd: installRecord.installPath, logPath: installRecord.logPath });
+  startManagedLocalProvider({
+    provider,
+    file: installRecord.binaryPath,
+    args,
+    cwd: installRecord.installPath,
+    logPath: installRecord.logPath,
+  });
   const ready = await waitForHttpReady(localStatusUrl(port));
   return {
     ok: ready,
@@ -864,7 +853,7 @@ async function setupShiny(configuredEndpoint?: string): Promise<SetupResponse> {
     };
   }
 
-  startDetached(activeBinaryPath, args, { cwd: installPath, logPath });
+  startManagedLocalProvider({ provider, file: activeBinaryPath, args, cwd: installPath, logPath });
   const ready = await waitForHttpReady(statusUrl);
   if (nextRecord) await writeInstallRecord(nextRecord);
   return {
@@ -1003,7 +992,7 @@ async function setupFission(configuredEndpoint?: string): Promise<SetupResponse>
     };
   }
 
-  startDetached(activeBinaryPath, args, { cwd: installPath, logPath });
+  startManagedLocalProvider({ provider, file: activeBinaryPath, args, cwd: installPath, logPath });
   const ready = await waitForHttpReady(statusUrl);
   if (nextRecord) await writeInstallRecord(nextRecord);
   return {

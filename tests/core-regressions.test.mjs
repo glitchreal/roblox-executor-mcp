@@ -15,7 +15,7 @@ import {
   recordDecompilerProviderSuccess,
   shouldSkipDecompilerProvider,
 } from "../dist/decompiler/health.js";
-import { resolveDecompilerProviders } from "../dist/decompiler/run.js";
+import { decompileBytecode, resolveDecompilerProviders } from "../dist/decompiler/run.js";
 import {
   cleanupInactiveHttpClients,
   getClientById,
@@ -290,6 +290,68 @@ test("sustained fast successes remain healthy and cooldowns affect resolved plan
     resolveDecompilerProviders(settings, { clientId: "health-test" }).orderedProviders[0],
     "fission"
   );
+});
+
+test("an explicitly requested original provider stays first before ordered fallbacks", () => {
+  const settings = structuredClone(DEFAULT_DECOMPILER_SETTINGS);
+  settings.providerOrder = ["builtin", "luaexpert", "shiny", "oracle", "konstant", "fission"];
+  for (const provider of Object.values(settings.providers)) provider.enabled = true;
+
+  recordDecompilerProviderFailure({
+    id: "oracle",
+    errorMessage: "Timed out after 1s.",
+    timedOut: true,
+    runtime: settings.runtime,
+    clientId: "provider-preference",
+  });
+  recordDecompilerProviderFailure({
+    id: "oracle",
+    errorMessage: "Timed out after 1s.",
+    timedOut: true,
+    runtime: settings.runtime,
+    clientId: "provider-preference",
+  });
+
+  const ordinary = resolveDecompilerProviders(settings, {
+    clientId: "provider-preference",
+  });
+  assert.equal(ordinary.orderedProviders.includes("oracle"), false, "oracle must actually be cooling down");
+
+  const resolved = resolveDecompilerProviders(settings, {
+    clientId: "provider-preference",
+    requestedProvider: "oracle",
+  });
+  assert.deepEqual(resolved.orderedProviders, ["oracle", ...ordinary.orderedProviders]);
+});
+
+test("an unavailable built-in is not reported as an attempted retry provider", async () => {
+  const settings = structuredClone(DEFAULT_DECOMPILER_SETTINGS);
+  for (const [id, provider] of Object.entries(settings.providers)) {
+    provider.enabled = id === "builtin";
+  }
+  const result = await decompileBytecode(settings, {
+    bytecodeBase64: Buffer.from("bytecode").toString("base64"),
+    builtinAvailable: false,
+    requestedProvider: "builtin",
+    clientId: "attempted-provider-contract",
+  });
+  assert.equal(result.ok, false);
+  assert.deepEqual(result.attemptedProviders, []);
+});
+
+test("a built-in handshake is reported as an attempted provider", async () => {
+  const settings = structuredClone(DEFAULT_DECOMPILER_SETTINGS);
+  for (const [id, provider] of Object.entries(settings.providers)) {
+    provider.enabled = id === "builtin";
+  }
+  const result = await decompileBytecode(settings, {
+    bytecodeBase64: Buffer.from("bytecode").toString("base64"),
+    builtinAvailable: true,
+    requestedProvider: "builtin",
+    clientId: "attempted-builtin-handshake",
+  });
+  assert.equal(result.needsBuiltin, true);
+  assert.deepEqual(result.attemptedProviders, ["builtin"]);
 });
 
 test("built-in health is client scoped and stale observations are rejected", () => {

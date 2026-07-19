@@ -1,8 +1,12 @@
 local JobStatus = {}
 JobStatus.__index = JobStatus
+local emitWarning = warn or print
 
-function JobStatus.new(pipeline)
-    return setmetatable({ pipeline = pipeline }, JobStatus)
+function JobStatus.new(pipeline, failedResync)
+    return setmetatable({
+        pipeline = pipeline,
+        failedResync = failedResync,
+    }, JobStatus)
 end
 
 function JobStatus:Publish()
@@ -21,6 +25,7 @@ function JobStatus:MarkMapped(debugId, shouldPublish)
     end
 
     pipeline:SetJobState(job, "mapped")
+    if self.failedResync then self.failedResync:Cancel(job) end
     job.prepared = nil
     job.script = nil
     if shouldPublish ~= false then self:Publish() end
@@ -39,10 +44,11 @@ function JobStatus:MarkFailed(debugId, errorMessage, shouldPublish)
     end
 
     pipeline:SetJobState(job, "failed")
+    if self.failedResync then self.failedResync:Schedule(job) end
     job.errorMessage = tostring(errorMessage or "unknown error")
     job.prepared = nil
     job.script = nil
-    warn("[Roblox Executor MCP] Script mapping skipped " .. tostring(debugId) .. ": " .. tostring(errorMessage or "unknown error"))
+    emitWarning("[Roblox Executor MCP] Script mapping skipped " .. tostring(debugId) .. ": " .. tostring(errorMessage or "unknown error"))
     if shouldPublish ~= false then self:Publish() end
     return true
 end

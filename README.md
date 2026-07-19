@@ -111,6 +111,8 @@ loadstring(game:HttpGet("http://" .. bridgeUrl .. "/script.luau"))()
 getgenv().BridgeURL = "10.0.0.4:16384"                  -- default: localhost:16384
 getgenv().DisableWebSocket = true                        -- force HTTP polling
 getgenv().DisableInitialScriptDecompMapping = true       -- skip initial decompilation
+getgenv().MCP_FailedScriptResyncInterval = 30            -- retry failed script syncs periodically
+getgenv().MCP_FailedScriptResyncBatchSize = 8            -- bound each periodic retry batch
 ```
 
 After the MCP server starts and Roblox connects, open the dashboard:

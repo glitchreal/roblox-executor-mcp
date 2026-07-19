@@ -29,6 +29,7 @@ export interface DecompileResult {
   source?: string;
   providerId?: DecompilerProviderId;
   attempts: string[];
+  attemptedProviders: DecompilerProviderId[];
   error?: string;
   needsBuiltin?: boolean;
 }
@@ -396,7 +397,11 @@ export function resolveDecompilerProviders(
     if (!provider?.enabled || disabledProviders.has(id)) continue;
 
     const skip = shouldSkipDecompilerProvider(id, runtime, options.clientId);
-    if (skip.skip) {
+    // A failed-script resync explicitly requests the provider that handled its
+    // first attempt. Give that provider one real retry even while adaptive
+    // health policy has it in cooldown; subsequent providers still follow the
+    // normal filtered fallback plan.
+    if (skip.skip && id !== requestedProvider) {
       skippedAttempts.push(
         `[${id}] skipped: ${skip.reason ?? "provider is temporarily unavailable"}`
       );
@@ -420,6 +425,7 @@ export async function decompileBytecode(
   const bytecode = Buffer.from(input.bytecodeBase64, "base64");
   const resolved = resolveDecompilerProviders(settings, input);
   const attempts: string[] = [...resolved.skippedAttempts];
+  const attemptedProviders: DecompilerProviderId[] = [];
   const deadline = Date.now() + (runtime.overallTimeoutMs || 12000);
 
   for (const id of resolved.orderedProviders) {
@@ -428,12 +434,14 @@ export async function decompileBytecode(
 
     if (id === "builtin" && !input.builtinSource) {
       if (input.builtinAvailable) {
+        attemptedProviders.push(id);
         const releaseReservation = startProviderAttempt(id);
         releaseReservation();
         return {
           ok: false,
           providerId: "builtin",
           attempts,
+          attemptedProviders,
           needsBuiltin: true,
         };
       }
@@ -447,6 +455,7 @@ export async function decompileBytecode(
       attempts.push("Overall decompile deadline reached.");
       break;
     }
+    attemptedProviders.push(id);
 
     const providerTimeoutMs = Math.min(
       runtime.providerTimeoutsMs?.[id] ?? DEFAULT_PROVIDER_TIMEOUTS_MS[id] ?? 6000,
@@ -476,6 +485,7 @@ export async function decompileBytecode(
         providerId: id,
         source: `-- Decompiled with ${displayName}\n${result.result}`,
         attempts,
+        attemptedProviders,
       };
     }
 
@@ -499,6 +509,7 @@ export async function decompileBytecode(
   return {
     ok: false,
     attempts,
+    attemptedProviders,
     error: attempts.join("\n\n"),
   };
 }

@@ -251,7 +251,8 @@ local function RefreshDecompilerPlan(force, generation, clientId)
     return DecompilerPlan.providerId
 end
 
-local function ShouldUseDirectBuiltIn(generation, clientId)
+local function ShouldUseDirectBuiltIn(providerId, generation, clientId)
+    if providerId ~= "builtin" then return false end
     if DecompilerPlan.blockedBuiltinUntil > os.clock() then return false end
     return type(BuiltInDecompile) == "function" and RefreshDecompilerPlan(false, generation, clientId) == "builtin"
 end
@@ -369,24 +370,29 @@ local function RequestServerDecompile(bytecode, options, generation, clientId)
         return nil, "Decompile server returned invalid JSON."
     end
 
+    local firstAttemptedProvider
+    if type(decoded.attemptedProviders) == "table" and type(decoded.attemptedProviders[1]) == "string" then
+        firstAttemptedProvider = decoded.attemptedProviders[1]
+    end
+
     if decoded.ok == true and type(decoded.source) == "string" and decoded.source ~= "" then
-        return StripDecompilerBanner(decoded.source)
+        return StripDecompilerBanner(decoded.source), nil, false, firstAttemptedProvider
     end
     if decoded.needsBuiltin == true and decoded.providerId == "builtin" then
-        return nil, nil, true
+        return nil, nil, true, firstAttemptedProvider
     end
 
     if type(decoded.error) == "string" and decoded.error ~= "" then
-        return nil, decoded.error
+        return nil, decoded.error, false, firstAttemptedProvider
     end
     if type(decoded.attempts) == "table" then
-        return nil, table.concat(decoded.attempts, "\n\n")
+        return nil, table.concat(decoded.attempts, "\n\n"), false, firstAttemptedProvider
     end
 
-    return nil, "Decompile server failed without a detailed error."
+    return nil, "Decompile server failed without a detailed error.", false, firstAttemptedProvider
 end
 
-local function PrepareScriptForMapping(script, fetchCache, generation, clientId)
+local function PrepareScriptForMapping(script, fetchCache, generation, clientId, retryProviderId)
     generation = generation or ScriptMappingPipeline.generation
     clientId = clientId or ScriptMappingPipeline.clientId
     local debugId = script:GetDebugId()
@@ -404,11 +410,16 @@ local function PrepareScriptForMapping(script, fetchCache, generation, clientId)
         }
     end
 
-    if ShouldUseDirectBuiltIn(generation, clientId) then
+    local plannedProvider = RefreshDecompilerPlan(false, generation, clientId)
+    local selectedProvider = retryProviderId or plannedProvider
+    local retryDirectBuiltin = retryProviderId == "builtin"
+    if retryDirectBuiltin or ShouldUseDirectBuiltIn(selectedProvider, generation, clientId) then
         return {
             debugId = debugId,
             scriptHash = scriptHash,
+            retryProviderId = retryProviderId,
             useDirectBuiltin = true,
+            forceDirectBuiltinRetry = retryDirectBuiltin,
         }
     end
 
@@ -421,7 +432,27 @@ local function PrepareScriptForMapping(script, fetchCache, generation, clientId)
         debugId = debugId,
         scriptHash = scriptHash,
         bytecode = bytecodeOrError,
+        retryProviderId = retryProviderId,
     }
+end
+
+local function BuildServerOptions(prepared, overrides)
+    local options = {}
+    if type(prepared.retryProviderId) == "string" then
+        options.requestedProvider = prepared.retryProviderId
+    end
+    if type(overrides) == "table" then
+        for name, value in overrides do
+            options[name] = value
+        end
+    end
+    return if next(options) == nil then nil else options
+end
+
+local function TakeRetryServerOptions(prepared, overrides)
+    local options = BuildServerOptions(prepared, overrides)
+    prepared.retryProviderId = nil
+    return options
 end
 
 local function DecompileScriptSource(script, prepared, generation, clientId)
@@ -438,14 +469,17 @@ local function DecompileScriptSource(script, prepared, generation, clientId)
     if type(prepared.source) == "string" and prepared.source ~= "" then
         return prepared.source, nil, prepared.scriptHash, prepared
     end
-    local serverOptions = if prepared.builtinDisabled == true then { disabledProviders = { "builtin" } } else nil
     if prepared.useDirectBuiltin == true then
-        local canAttemptDirectBuiltin = DecompilerAttemptState.CanAttemptBuiltIn(
-            prepared,
-            DecompilerPlan.blockedBuiltinUntil,
-            os.clock()
-        )
+        local canAttemptDirectBuiltin = prepared.forceDirectBuiltinRetry == true or
+            DecompilerAttemptState.CanAttemptBuiltIn(
+                prepared,
+                DecompilerPlan.blockedBuiltinUntil,
+                os.clock()
+            )
         if canAttemptDirectBuiltin then
+            prepared.retryProviderId = nil
+            prepared.forceDirectBuiltinRetry = nil
+            prepared.initialProviderId = prepared.initialProviderId or "builtin"
             DecompilerAttemptState.MarkBuiltInAttempted(prepared)
             local builtinSource, builtinLatencyMs, builtinError, builtinTimedOut = TryBuiltInDecompile(script)
             if builtinSource then
@@ -459,8 +493,6 @@ local function DecompileScriptSource(script, prepared, generation, clientId)
             DecompilerAttemptState.DisableBuiltIn(prepared)
             ReportBuiltInDecompileFailure(builtinError, builtinLatencyMs, builtinTimedOut, generation, clientId)
         end
-        serverOptions = { disabledProviders = { "builtin" } }
-
         local okBytecode, bytecodeOrError = PreparedScript.MaterializeServerFallback(prepared, function()
             return ReadScriptBytecode(script)
         end)
@@ -473,12 +505,19 @@ local function DecompileScriptSource(script, prepared, generation, clientId)
         return nil, "Prepared script is missing bytecode.", prepared.scriptHash, prepared
     end
 
-    local source, errorMessage, needsBuiltin = RequestServerDecompile(
+    local serverOptions = TakeRetryServerOptions(
+        prepared,
+        if prepared.builtinDisabled == true then { disabledProviders = { "builtin" } } else nil
+    )
+    local source, errorMessage, needsBuiltin, firstAttemptedProvider = RequestServerDecompile(
         prepared.bytecode,
         serverOptions,
         generation,
         clientId
     )
+    if not prepared.initialProviderId and type(firstAttemptedProvider) == "string" then
+        prepared.initialProviderId = firstAttemptedProvider
+    end
     if needsBuiltin then
         local canAttemptBuiltin = DecompilerAttemptState.CanAttemptBuiltIn(
             prepared,
@@ -490,23 +529,23 @@ local function DecompileScriptSource(script, prepared, generation, clientId)
             local builtinSource, builtinLatencyMs, builtinError, builtinTimedOut = TryBuiltInDecompile(script)
             if builtinSource then
                 ReportBuiltInDecompileSuccess(builtinLatencyMs, generation, clientId)
-                source, errorMessage = RequestServerDecompile(prepared.bytecode, {
+                source, errorMessage = RequestServerDecompile(prepared.bytecode, BuildServerOptions(prepared, {
                     requestedProvider = "builtin",
                     builtinSource = builtinSource,
                     builtinLatencyMs = builtinLatencyMs,
-                }, generation, clientId)
+                }), generation, clientId)
             else
                 DecompilerAttemptState.DisableBuiltIn(prepared)
                 ReportBuiltInDecompileFailure(builtinError, builtinLatencyMs, builtinTimedOut, generation, clientId)
-                source, errorMessage = RequestServerDecompile(prepared.bytecode, {
+                source, errorMessage = RequestServerDecompile(prepared.bytecode, BuildServerOptions(prepared, {
                     disabledProviders = { "builtin" },
-                }, generation, clientId)
+                }), generation, clientId)
             end
         else
             DecompilerAttemptState.DisableBuiltIn(prepared)
-            source, errorMessage = RequestServerDecompile(prepared.bytecode, {
+            source, errorMessage = RequestServerDecompile(prepared.bytecode, BuildServerOptions(prepared, {
                 disabledProviders = { "builtin" },
-            }, generation, clientId)
+            }), generation, clientId)
         end
     end
     if not source then
@@ -538,5 +577,6 @@ return {
     PrepareScriptForMapping = PrepareScriptForMapping,
     RefreshDecompilerPlan = RefreshDecompilerPlan,
     ResetDecompilerClient = ResetDecompilerClient,
+    TakeRetryServerOptions = TakeRetryServerOptions,
 }
 end

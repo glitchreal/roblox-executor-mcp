@@ -6,6 +6,7 @@ local StartUploadQueue = context.StartUploadQueue
 local PublishScriptMappingStatus = context.PublishScriptMappingStatus
 local ResetScriptMappingState = context.ResetScriptMappingState
 local StartScriptMapping = context.StartScriptMapping
+local StartFailedScriptResync = context.StartFailedScriptResync
 local ResumeDeferredScriptMappings = context.ResumeDeferredScriptMappings
 --// Main Loop \\--
 while true do
@@ -27,6 +28,7 @@ while true do
 
         if not getgenv().DisableInitialScriptDecompMapping then
             StartScriptMapping(clientId)
+            StartFailedScriptResync()
             ResumeDeferredScriptMappings()
             PublishScriptMappingStatus()
         else

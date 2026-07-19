@@ -10,6 +10,7 @@ local getnilinstances = dependencies.getnilinstances
 local ScriptMappingWorkerCount = dependencies.WorkerCount
 local Concurrency = dependencies.Concurrency
 local JobStatus = dependencies.JobStatus
+local FailedResync = dependencies.FailedResync
 local UploadClient = dependencies.UploadClient
 local DecompilerClient = dependencies.DecompilerClient
 local EnqueueScriptSourceUpload = UploadClient.EnqueueScriptSourceUpload
@@ -155,7 +156,13 @@ local function MapScriptSource(script, prepared, generation, knownDebugId)
     local clientId = ScriptMappingPipeline.clientId
     if not prepared then
         local prepareError
-        prepared, prepareError = PrepareScriptForMapping(script, true, generation, clientId)
+        prepared, prepareError = PrepareScriptForMapping(
+            script,
+            true,
+            generation,
+            clientId,
+            job.initialProviderId
+        )
         if not prepared then
             RetryScriptMapping(script, nil, generation, prepareError, debugId)
             return
@@ -169,6 +176,9 @@ local function MapScriptSource(script, prepared, generation, knownDebugId)
         clientId
     )
     job.prepared = usedPrepared
+    if not job.initialProviderId and usedPrepared then
+        job.initialProviderId = usedPrepared.initialProviderId
+    end
     if not source then
         RetryScriptMapping(script, usedPrepared, generation, errorMessage, debugId)
         return
@@ -218,6 +228,40 @@ local function GetScriptByDebugId(debugId)
     end
 
     return nil
+end
+
+local function RetryFailedScripts()
+    if not IsScriptMappingTransportReady(ScriptMappingPipeline.clientId) then return end
+
+    FailedResync:ProcessDue(function(job)
+        local script = GetScriptByDebugId(job.debugId)
+        if not script then
+            FailedResync:Defer(job)
+            return
+        end
+        if not FailedResync:Claim(job) then return end
+
+        AttachScriptToMappingJob(job, script)
+        ScriptMappingPipeline.workers:QueueOperation(
+            script,
+            nil,
+            job.generation,
+            job.debugId
+        )
+    end, function(job, handleError)
+            if job.state == "failed" then
+                FailedResync:Defer(job)
+            else
+                JobStatus:MarkFailed(
+                    job.debugId,
+                    "Failed to run periodic resync: " .. tostring(handleError)
+                )
+            end
+    end)
+end
+
+local function StartFailedScriptResync()
+    FailedResync:Start(RetryFailedScripts)
 end
 
 local function IsCandidateScriptForMapping(script)
@@ -432,6 +476,7 @@ return {
     QueueMappedScriptSource = QueueMappedScriptSource,
     ResetScriptMappingState = ResetScriptMappingState,
     ResumeDeferredScriptMappings = ResumeDeferredScriptMappings,
+    StartFailedScriptResync = StartFailedScriptResync,
     StartScriptMapping = StartScriptMapping,
 }
 end

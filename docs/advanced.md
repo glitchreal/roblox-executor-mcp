@@ -42,6 +42,10 @@ Set these in Roblox **before** running the connector:
 | `getgenv().BridgeURL` | `localhost:16384` | Server address to connect to |
 | `getgenv().DisableWebSocket` | `false` | Force HTTP polling instead of WebSocket |
 | `getgenv().DisableInitialScriptDecompMapping` | `false` | Skip decompiling all scripts on connect |
+| `getgenv().MCP_FailedScriptResyncInterval` | `30` | Seconds before the first failed-script resync; repeated failures back off to five minutes |
+| `getgenv().MCP_FailedScriptResyncBatchSize` | `8` | Maximum failed scripts queued by one periodic resync tick |
+
+Failed script mappings are retried automatically in bounded batches. A resync prioritizes the provider that the original attempt actually reached, then uses the configured provider order as fallback.
 
 The connector supports two transport modes:
 - **WebSocket** (preferred) — persistent connection, lower latency

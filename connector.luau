@@ -730,53 +730,159 @@ return b end function a.g():typeof(__modImpl())local b=a.cache.g if not b then b
 local b={}
 b.__index=b
 
-function b.new(c)
-return setmetatable({pipeline=c},b)
+function b.new(c,d)
+d=d or{}
+return setmetatable({
+pipeline=c,
+clock=d.Clock or os.clock,
+taskLibrary=d.TaskLibrary or task,
+intervalSeconds=d.IntervalSeconds or 30,
+maxDelaySeconds=d.MaxDelaySeconds or 300,
+batchSize=d.BatchSize or 8,
+thread=nil,
+},b)
 end
 
-function b.Publish(c)
-c.pipeline.statusDirty=true
+function b.Schedule(c,d)
+local e=math.max(0,d.resyncRounds or 0)
+local f=math.min(
+c.intervalSeconds*(2^e),
+c.maxDelaySeconds
+)
+d.nextResyncAt=c.clock()+f
 end
 
-function b.MarkMapped(c,d,e)
-local f=c.pipeline
-local g=f.jobs[d]
-if g and(g.state=="mapped"or g.state=="failed"or g.state=="removed")then
-return false
+function b.Cancel(c,d)
+d.nextResyncAt=nil
+d.resyncRounds=nil
 end
 
-if not g then
-g=f:EnsureJob(d)
+function b.Defer(c,d)
+d.nextResyncAt=c.clock()+c.intervalSeconds
 end
 
-f:SetJobState(g,"mapped")
-g.prepared=nil
-g.script=nil
-if e~=false then c:Publish()end
-return true
+function b.GetDue(c,d)
+d=d or c.clock()
+local e={}
+for f,g in c.pipeline.jobs do
+if(
+g.generation==c.pipeline.generation and
+g.state=="failed"and
+type(g.nextResyncAt)=="number"and
+g.nextResyncAt<=d
+)then
+table.insert(e,g)
+end
 end
 
-function b.MarkFailed(c,d,e,f)
-local g=c.pipeline
-local h=g.jobs[d]
+table.sort(e,function(f,g)
+if f.nextResyncAt==g.nextResyncAt then
+return f.debugId<g.debugId
+end
+return f.nextResyncAt<g.nextResyncAt
+end)
+while#e>c.batchSize do
+table.remove(e)
+end
+return e
+end
+
+function b.Claim(c,d,e)
+e=e or c.clock()
+if c.pipeline.jobs[d.debugId]~=d then return false end
+if d.generation~=c.pipeline.generation or d.state~="failed"then return false end
+if type(d.nextResyncAt)~="number"or d.nextResyncAt>e then return false end
+
+d.resyncRounds=(d.resyncRounds or 0)+1
+d.nextResyncAt=nil
+d.errorMessage=nil
+return c.pipeline:TrackJob(d.debugId)==d
+end
+
+function b.Start(c,d)
+if c.thread then return end
+c.thread=c.taskLibrary.spawn(function()
+while true do
+c.taskLibrary.wait(c.intervalSeconds)
+local e,f=pcall(d)
+if not e then
+warn("[Roblox Executor MCP] Failed-script resync tick failed: "..tostring(f))
+end
+end
+end)
+end
+
+function b.ProcessDue(c,d,e)
+for f,g in c:GetDue()do
+local h,i=pcall(d,g)
+if not h then
+if e then
+e(g,i)
+else
+c:Defer(g)
+end
+end
+end
+end
+
+return b end function a.h():typeof(__modImpl())local b=a.cache.h if not b then b={c=__modImpl()}a.cache.h=b end return b.c end end do local function __modImpl()
+
+local b={}
+b.__index=b
+local c=warn or print
+
+function b.new(d,e)
+return setmetatable({
+pipeline=d,
+failedResync=e,
+},b)
+end
+
+function b.Publish(d)
+d.pipeline.statusDirty=true
+end
+
+function b.MarkMapped(d,e,f)
+local g=d.pipeline
+local h=g.jobs[e]
 if h and(h.state=="mapped"or h.state=="failed"or h.state=="removed")then
 return false
 end
 
 if not h then
-h=g:EnsureJob(d)
+h=g:EnsureJob(e)
 end
 
-g:SetJobState(h,"failed")
-h.errorMessage=tostring(e or"unknown error")
+g:SetJobState(h,"mapped")
+if d.failedResync then d.failedResync:Cancel(h)end
 h.prepared=nil
 h.script=nil
-warn("[Roblox Executor MCP] Script mapping skipped "..tostring(d)..": "..tostring(e or"unknown error"))
-if f~=false then c:Publish()end
+if f~=false then d:Publish()end
 return true
 end
 
-return b end function a.h():typeof(__modImpl())local b=a.cache.h if not b then b={c=__modImpl()}a.cache.h=b end return b.c end end do local function __modImpl()
+function b.MarkFailed(d,e,f,g)
+local h=d.pipeline
+local i=h.jobs[e]
+if i and(i.state=="mapped"or i.state=="failed"or i.state=="removed")then
+return false
+end
+
+if not i then
+i=h:EnsureJob(e)
+end
+
+h:SetJobState(i,"failed")
+if d.failedResync then d.failedResync:Schedule(i)end
+i.errorMessage=tostring(f or"unknown error")
+i.prepared=nil
+i.script=nil
+c("[Roblox Executor MCP] Script mapping skipped "..tostring(e)..": "..tostring(f or"unknown error"))
+if g~=false then d:Publish()end
+return true
+end
+
+return b end function a.i():typeof(__modImpl())local b=a.cache.i if not b then b={c=__modImpl()}a.cache.i=b end return b.c end end do local function __modImpl()
 
 return function(b)
 local c=b.ScriptMappingPipeline
@@ -987,7 +1093,7 @@ ResetScriptSourceUploadQueue=ResetScriptSourceUploadQueue,
 StartUploadQueue=StartUploadQueue,
 UploadQueueMaxBytes=33554432,
 }
-end end function a.i():typeof(__modImpl())local b=a.cache.i if not b then b={c=__modImpl()}a.cache.i=b end return b.c end end do local function __modImpl()
+end end function a.j():typeof(__modImpl())local b=a.cache.j if not b then b={c=__modImpl()}a.cache.j=b end return b.c end end do local function __modImpl()
 
 return function(b)
 local c=b.ScriptMappingPipeline
@@ -1242,9 +1348,10 @@ r.expiresAt=os.clock()+C
 return r.providerId
 end
 
-local function ShouldUseDirectBuiltIn(t,u)
+local function ShouldUseDirectBuiltIn(t,u,v)
+if t~="builtin"then return false end
 if r.blockedBuiltinUntil>os.clock()then return false end
-return type(h)=="function"and RefreshDecompilerPlan(false,t,u)=="builtin"
+return type(h)=="function"and RefreshDecompilerPlan(false,u,v)=="builtin"
 end
 
 local function PostBuiltInObservation(t,u,v)
@@ -1360,59 +1467,89 @@ if not A or type(B)~="table"then
 return nil,"Decompile server returned invalid JSON."
 end
 
+local C
+if type(B.attemptedProviders)=="table"and type(B.attemptedProviders[1])=="string"then
+C=B.attemptedProviders[1]
+end
+
 if B.ok==true and type(B.source)=="string"and B.source~=""then
-return f(B.source)
+return f(B.source),nil,false,C
 end
 if B.needsBuiltin==true and B.providerId=="builtin"then
-return nil,nil,true
+return nil,nil,true,C
 end
 
 if type(B.error)=="string"and B.error~=""then
-return nil,B.error
+return nil,B.error,false,C
 end
 if type(B.attempts)=="table"then
-return nil,table.concat(B.attempts,"\n\n")
+return nil,table.concat(B.attempts,"\n\n"),false,C
 end
 
-return nil,"Decompile server failed without a detailed error."
+return nil,"Decompile server failed without a detailed error.",false,C
 end
 
-local function PrepareScriptForMapping(t,u,v,w)
+local function PrepareScriptForMapping(t,u,v,w,x)
 v=v or c.generation
 w=w or c.clientId
-local x=t:GetDebugId()
-local y=GetScriptHashForInstance(t)
-if u and y then
-FetchCachedScriptSources(w,{y})
+local y=t:GetDebugId()
+local z=GetScriptHashForInstance(t)
+if u and z then
+FetchCachedScriptSources(w,{z})
 end
 
-local z=y and c.sourceCacheByHash[y]or nil
-if z then
+local A=z and c.sourceCacheByHash[z]or nil
+if A then
 return{
-debugId=x,
-scriptHash=y,
-source=z,
+debugId=y,
+scriptHash=z,
+source=A,
 }
 end
 
-if ShouldUseDirectBuiltIn(v,w)then
+local B=RefreshDecompilerPlan(false,v,w)
+local C=x or B
+local D=x=="builtin"
+if D or ShouldUseDirectBuiltIn(C,v,w)then
 return{
-debugId=x,
-scriptHash=y,
+debugId=y,
+scriptHash=z,
+retryProviderId=x,
 useDirectBuiltin=true,
+forceDirectBuiltinRetry=D,
 }
 end
 
-local A,B=ReadScriptBytecode(t)
-if not A then
-return nil,B
+local E,F=ReadScriptBytecode(t)
+if not E then
+return nil,F
 end
 
 return{
-debugId=x,
-scriptHash=y,
-bytecode=B,
+debugId=y,
+scriptHash=z,
+bytecode=F,
+retryProviderId=x,
 }
+end
+
+local function BuildServerOptions(t,u)
+local v={}
+if type(t.retryProviderId)=="string"then
+v.requestedProvider=t.retryProviderId
+end
+if type(u)=="table"then
+for w,x in u do
+v[w]=x
+end
+end
+return if next(v)==nil then nil else v
+end
+
+local function TakeRetryServerOptions(t,u)
+local v=BuildServerOptions(t,u)
+t.retryProviderId=nil
+return v
 end
 
 local function DecompileScriptSource(t,u,v,w)
@@ -1429,34 +1566,35 @@ end
 if type(u.source)=="string"and u.source~=""then
 return u.source,nil,u.scriptHash,u
 end
-local y=if u.builtinDisabled==true then{disabledProviders={"builtin"}}else nil
 if u.useDirectBuiltin==true then
-local z=j.CanAttemptBuiltIn(
+local y=u.forceDirectBuiltinRetry==true or
+j.CanAttemptBuiltIn(
 u,
 r.blockedBuiltinUntil,
 os.clock()
 )
-if z then
+if y then
+u.retryProviderId=nil
+u.forceDirectBuiltinRetry=nil
+u.initialProviderId=u.initialProviderId or"builtin"
 j.MarkBuiltInAttempted(u)
-local A,B,C,D=TryBuiltInDecompile(t)
-if A then
-ReportBuiltInDecompileSuccess(B,v,w)
+local z,A,B,C=TryBuiltInDecompile(t)
+if z then
+ReportBuiltInDecompileSuccess(A,v,w)
 if u.scriptHash then
-RememberScriptSourceForHash(u.scriptHash,A)
+RememberScriptSourceForHash(u.scriptHash,z)
 end
-return A,nil,u.scriptHash,u
+return z,nil,u.scriptHash,u
 end
 
 j.DisableBuiltIn(u)
-ReportBuiltInDecompileFailure(C,B,D,v,w)
+ReportBuiltInDecompileFailure(B,A,C,v,w)
 end
-y={disabledProviders={"builtin"}}
-
-local A,B=k.MaterializeServerFallback(u,function()
+local z,A=k.MaterializeServerFallback(u,function()
 return ReadScriptBytecode(t)
 end)
-if not A then
-return nil,B,u.scriptHash,u
+if not z then
+return nil,A,u.scriptHash,u
 end
 end
 
@@ -1464,40 +1602,47 @@ if type(u.bytecode)~="string"then
 return nil,"Prepared script is missing bytecode.",u.scriptHash,u
 end
 
-local z,A,B=RequestServerDecompile(
+local y=TakeRetryServerOptions(
+u,
+if u.builtinDisabled==true then{disabledProviders={"builtin"}}else nil
+)
+local z,A,B,C=RequestServerDecompile(
 u.bytecode,
 y,
 v,
 w
 )
+if not u.initialProviderId and type(C)=="string"then
+u.initialProviderId=C
+end
 if B then
-local C=j.CanAttemptBuiltIn(
+local D=j.CanAttemptBuiltIn(
 u,
 r.blockedBuiltinUntil,
 os.clock()
 )
-if C then
-j.MarkBuiltInAttempted(u)
-local D,E,F,G=TryBuiltInDecompile(t)
 if D then
-ReportBuiltInDecompileSuccess(E,v,w)
-z,A=RequestServerDecompile(u.bytecode,{
+j.MarkBuiltInAttempted(u)
+local E,F,G,H=TryBuiltInDecompile(t)
+if E then
+ReportBuiltInDecompileSuccess(F,v,w)
+z,A=RequestServerDecompile(u.bytecode,BuildServerOptions(u,{
 requestedProvider="builtin",
-builtinSource=D,
-builtinLatencyMs=E,
-},v,w)
+builtinSource=E,
+builtinLatencyMs=F,
+}),v,w)
 else
 j.DisableBuiltIn(u)
-ReportBuiltInDecompileFailure(F,E,G,v,w)
-z,A=RequestServerDecompile(u.bytecode,{
+ReportBuiltInDecompileFailure(G,F,H,v,w)
+z,A=RequestServerDecompile(u.bytecode,BuildServerOptions(u,{
 disabledProviders={"builtin"},
-},v,w)
+}),v,w)
 end
 else
 j.DisableBuiltIn(u)
-z,A=RequestServerDecompile(u.bytecode,{
+z,A=RequestServerDecompile(u.bytecode,BuildServerOptions(u,{
 disabledProviders={"builtin"},
-},v,w)
+}),v,w)
 end
 end
 if not z then
@@ -1529,8 +1674,9 @@ GetScriptHashForInstance=GetScriptHashForInstance,
 PrepareScriptForMapping=PrepareScriptForMapping,
 RefreshDecompilerPlan=RefreshDecompilerPlan,
 ResetDecompilerClient=ResetDecompilerClient,
+TakeRetryServerOptions=TakeRetryServerOptions,
 }
-end end function a.j():typeof(__modImpl())local b=a.cache.j if not b then b={c=__modImpl()}a.cache.j=b end return b.c end end do local function __modImpl()
+end end function a.k():typeof(__modImpl())local b=a.cache.k if not b then b={c=__modImpl()}a.cache.k=b end return b.c end end do local function __modImpl()
 
 return function(b)
 local c=b.ScriptMappingPipeline
@@ -1544,411 +1690,455 @@ local j=b.getnilinstances
 local k=b.WorkerCount
 local l=b.Concurrency
 local m=b.JobStatus
-local n=b.UploadClient
-local o=b.DecompilerClient
-local p=n.EnqueueScriptSourceUpload
-local q=n.IsScriptMappingTransportReady
-local r=n.ResetScriptSourceUploadQueue
-local s=o.DecompileScriptSource
-local t=o.FetchCachedScriptSources
-local u=o.GetScriptHashForInstance
-local v=o.PrepareScriptForMapping
-local w=o.RefreshDecompilerPlan
-local x=o.ResetDecompilerClient
-local y=4
-local z=8
-local A=256
-local B
+local n=b.FailedResync
+local o=b.UploadClient
+local p=b.DecompilerClient
+local q=o.EnqueueScriptSourceUpload
+local r=o.IsScriptMappingTransportReady
+local s=o.ResetScriptSourceUploadQueue
+local t=p.DecompileScriptSource
+local u=p.FetchCachedScriptSources
+local v=p.GetScriptHashForInstance
+local w=p.PrepareScriptForMapping
+local x=p.RefreshDecompilerPlan
+local y=p.ResetDecompilerClient
+local z=4
+local A=8
+local B=256
+local C
 
 local function PublishCurrentMappingStatus()
 m:Publish()
 end
 
-local function RemoveScriptFromMapping(C,D)
-local E=c.jobs[C]
-if D~=c.generation or not E or E.state=="removed"then return end
+local function RemoveScriptFromMapping(D,E)
+local F=c.jobs[D]
+if E~=c.generation or not F or F.state=="removed"then return end
 
-c.instances[C]=nil
-c:SetJobState(E,"removed")
-E.script=nil
-E.prepared=nil
-p{
+c.instances[D]=nil
+c:SetJobState(F,"removed")
+F.script=nil
+F.prepared=nil
+q{
 kind="remove",
-debugId=C,
-generation=D,
+debugId=D,
+generation=E,
 attempts=0,
 }
 end
 
-local function AttachScriptToMappingJob(C,D)
-C.script=D
-c.instances[C.debugId]=D
-if C.destroyingConnection then return end
-local E=C.generation
-C.destroyingConnection=D.Destroying:Once(function()
-RemoveScriptFromMapping(C.debugId,E)
+local function AttachScriptToMappingJob(D,E)
+D.script=E
+c.instances[D.debugId]=E
+if D.destroyingConnection then return end
+local F=D.generation
+D.destroyingConnection=E.Destroying:Once(function()
+RemoveScriptFromMapping(D.debugId,F)
 end)
 end
 
-local function TrackScriptForMapping(C)
-return c:TrackJob(C)~=nil
+local function TrackScriptForMapping(D)
+return c:TrackJob(D)~=nil
 end
 
-local function DeferScriptMappingUntilTransport(C,D,E,F)
-local G=F or C:GetDebugId()
-local H=c.jobs[G]
-if E~=c.generation or not H then return end
-if H.state=="mapped"or H.state=="failed"or H.state=="removed"then return end
-
-c:SetJobState(H,"deferred")
-AttachScriptToMappingJob(H,C)
-H.prepared=D
-end
-
-local function RetryScriptMapping(C,D,E,F,G)
-local H=G or C:GetDebugId()
+local function DeferScriptMappingUntilTransport(D,E,F,G)
+local H=G or D:GetDebugId()
 local I=c.jobs[H]
-if E~=c.generation or not I then return end
+if F~=c.generation or not I then return end
 if I.state=="mapped"or I.state=="failed"or I.state=="removed"then return end
-if string.find(tostring(F),"Timed out",1,true)then
+
+c:SetJobState(I,"deferred")
+AttachScriptToMappingJob(I,D)
+I.prepared=E
+end
+
+local function RetryScriptMapping(D,E,F,G,H)
+local I=H or D:GetDebugId()
+local J=c.jobs[I]
+if F~=c.generation or not J then return end
+if J.state=="mapped"or J.state=="failed"or J.state=="removed"then return end
+if string.find(tostring(G),"Timed out",1,true)then
 l:Reduce()
 end
 
-I.mappingAttempts=(I.mappingAttempts or 0)+1
-if I.mappingAttempts>=y then
-m:MarkFailed(H,F or"Failed to prepare or decompile script source.")
+J.mappingAttempts=(J.mappingAttempts or 0)+1
+if J.mappingAttempts>=z then
+m:MarkFailed(I,G or"Failed to prepare or decompile script source.")
 return
 end
 
-c:SetJobState(I,"queued")
-AttachScriptToMappingJob(I,C)
-I.prepared=D
-local J=math.min(2^math.max(0,I.mappingAttempts-1),z)
-task.delay(J,function()
-if E~=c.generation or I.generation~=E then return end
-if I.state~="queued"then return end
-if not q(c.clientId)then
-DeferScriptMappingUntilTransport(C,D,E,H)
+c:SetJobState(J,"queued")
+AttachScriptToMappingJob(J,D)
+J.prepared=E
+local K=math.min(2^math.max(0,J.mappingAttempts-1),A)
+task.delay(K,function()
+if F~=c.generation or J.generation~=F then return end
+if J.state~="queued"then return end
+if not r(c.clientId)then
+DeferScriptMappingUntilTransport(D,E,F,I)
 return
 end
 
-c.workers:QueueOperation(C,D,E,H)
+c.workers:QueueOperation(D,E,F,I)
 end)
 end
 
-local function QueueMappedScriptSource(C,D,E,F,G)
-local H=G or C:GetDebugId()
-local I=c.jobs[H]
-if not I then
-TrackScriptForMapping(H)
-I=c.jobs[H]
-elseif I.state=="failed"then
-TrackScriptForMapping(H)
-elseif I.state=="mapped"or I.state=="awaiting_upload"or I.state=="removed"then
+local function QueueMappedScriptSource(D,E,F,G,H)
+local I=H or D:GetDebugId()
+local J=c.jobs[I]
+if not J then
+TrackScriptForMapping(I)
+J=c.jobs[I]
+elseif J.state=="failed"then
+TrackScriptForMapping(I)
+elseif J.state=="mapped"or J.state=="awaiting_upload"or J.state=="removed"then
 return false
 end
 
-local J=C:GetFullName()
-AttachScriptToMappingJob(I,C)
+local K=D:GetFullName()
+AttachScriptToMappingJob(J,D)
 
-c:SetJobState(I,"awaiting_upload")
-p{
+c:SetJobState(J,"awaiting_upload")
+q{
 kind="source",
-debugId=H,
-path=J,
-source=D,
-scriptHash=E,
+debugId=I,
+path=K,
+source=E,
+scriptHash=F,
 attempts=0,
-generation=F,
+generation=G,
 }
 return true
 end
 
-local function MapScriptSource(C,D,E,F)
-if E~=c.generation then return end
+local function MapScriptSource(D,E,F,G)
+if F~=c.generation then return end
 
-local G=F or C:GetDebugId()
-local H=c.jobs[G]
-if not H or H.state~="queued"then return end
-if not q(c.clientId)then
-DeferScriptMappingUntilTransport(C,D,E,G)
+local H=G or D:GetDebugId()
+local I=c.jobs[H]
+if not I or I.state~="queued"then return end
+if not r(c.clientId)then
+DeferScriptMappingUntilTransport(D,E,F,H)
 return
 end
-if not c:TryStartMapping(H)then return end
+if not c:TryStartMapping(I)then return end
 
-while c.upload.bytes>=n.UploadQueueMaxBytes do
-if E~=c.generation then return end
-if not q(c.clientId)then
-DeferScriptMappingUntilTransport(C,D,E,G)
+while c.upload.bytes>=o.UploadQueueMaxBytes do
+if F~=c.generation then return end
+if not r(c.clientId)then
+DeferScriptMappingUntilTransport(D,E,F,H)
 return
 end
 task.wait(0.05)
 end
 
-AttachScriptToMappingJob(H,C)
-local I=c.clientId
-if not D then
-local J
-D,J=v(C,true,E,I)
-if not D then
-RetryScriptMapping(C,nil,E,J,G)
+AttachScriptToMappingJob(I,D)
+local J=c.clientId
+if not E then
+local K
+E,K=w(
+D,
+true,
+F,
+J,
+I.initialProviderId
+)
+if not E then
+RetryScriptMapping(D,nil,F,K,H)
 return
 end
 end
-H.prepared=D
-local J,K,L,M=s(
-C,
+I.prepared=E
+local K,L,M,N=t(
 D,
 E,
-I
+F,
+J
 )
-H.prepared=M
-if not J then
-RetryScriptMapping(C,M,E,K,G)
+I.prepared=N
+if not I.initialProviderId and N then
+I.initialProviderId=N.initialProviderId
+end
+if not K then
+RetryScriptMapping(D,N,F,L,H)
 return
 end
-if E~=c.generation then return end
-if c.jobs[G]~=H then return end
-if H.state=="mapped"or H.state=="failed"or H.state=="removed"then return end
-H.mappingAttempts=0
+if F~=c.generation then return end
+if c.jobs[H]~=I then return end
+if I.state=="mapped"or I.state=="failed"or I.state=="removed"then return end
+I.mappingAttempts=0
 l:RecordSuccess()
 
-QueueMappedScriptSource(C,J,L,E,G)
+QueueMappedScriptSource(D,K,M,F,H)
 end
 
-B=function(C,D,E,F,G)
-if F~=c.generation or type(G)~="string"then return end
-RetryScriptMapping(D,E,F,tostring(C),G)
+C=function(D,E,F,G,H)
+if G~=c.generation or type(H)~="string"then return end
+RetryScriptMapping(E,F,G,tostring(D),H)
 end
 
 c.workers=d.new{
 MaxConcurrent=k,
 MainCallback=MapScriptSource,
-OnError=B,
+OnError=C,
 }
 
-local function GetScriptByDebugId(C)
-local D=c.instances[C]
-if D then
-return D
+local function GetScriptByDebugId(D)
+local E=c.instances[D]
+if E then
+return E
 end
 
-for E,F in game:QueryDescendants"LuaSourceContainer"do
-if F:IsA"Script"and F.RunContext==Enum.RunContext.Server then continue end
-if F:GetDebugId()~=C then continue end
+for F,G in game:QueryDescendants"LuaSourceContainer"do
+if G:IsA"Script"and G.RunContext==Enum.RunContext.Server then continue end
+if G:GetDebugId()~=D then continue end
 
-c.instances[C]=F
-return F
+c.instances[D]=G
+return G
 end
 
-for E,F in j()do
-if not F:IsA"LuaSourceContainer"then continue end
+for F,G in j()do
+if not G:IsA"LuaSourceContainer"then continue end
 
-if F:IsA"Script"and F.RunContext~=Enum.RunContext.Client then continue end
-if F:GetDebugId()~=C then continue end
+if G:IsA"Script"and G.RunContext~=Enum.RunContext.Client then continue end
+if G:GetDebugId()~=D then continue end
 
-c.instances[C]=F
-return F
+c.instances[D]=G
+return G
 end
 
 return nil
 end
 
-local function IsCandidateScriptForMapping(C)
-local D=(
-C:IsA"Script"and(
-C.RunContext==Enum.RunContext.Server or
-C.RunContext==Enum.RunContext.Legacy
-)
-)
-if D then return false end
+local function RetryFailedScripts()
+if not r(c.clientId)then return end
 
+n:ProcessDue(function(D)
+local E=GetScriptByDebugId(D.debugId)
+if not E then
+n:Defer(D)
+return
+end
+if not n:Claim(D)then return end
+
+AttachScriptToMappingJob(D,E)
+c.workers:QueueOperation(
+E,
+nil,
+D.generation,
+D.debugId
+)
+end,function(D,E)
+if D.state=="failed"then
+n:Defer(D)
+else
+m:MarkFailed(
+D.debugId,
+"Failed to run periodic resync: "..tostring(E)
+)
+end
+end)
+end
+
+local function StartFailedScriptResync()
+n:Start(RetryFailedScripts)
+end
+
+local function IsCandidateScriptForMapping(D)
 local E=(
-C.RobloxLocked or
-C:IsDescendantOf(g)or
-C:IsDescendantOf(h)or
-C:IsDescendantOf(i)
+D:IsA"Script"and(
+D.RunContext==Enum.RunContext.Server or
+D.RunContext==Enum.RunContext.Legacy
+)
 )
 if E then return false end
 
-local F=C:GetDebugId()
-if c.jobs[F]then return false end
+local F=(
+D.RobloxLocked or
+D:IsDescendantOf(g)or
+D:IsDescendantOf(h)or
+D:IsDescendantOf(i)
+)
+if F then return false end
+
+local G=D:GetDebugId()
+if c.jobs[G]then return false end
 
 return true
 end
 
-local function QueueScriptForMapping(C,D)
-local E=C:GetDebugId()
-if not TrackScriptForMapping(E)then return end
-AttachScriptToMappingJob(c.jobs[E],C)
+local function QueueScriptForMapping(D,E)
+local F=D:GetDebugId()
+if not TrackScriptForMapping(F)then return end
+AttachScriptToMappingJob(c.jobs[F],D)
 
 m:Publish()
-local F=c.generation
-if q(c.clientId)then
-c.workers:QueueOperation(C,D,F,E)
+local G=c.generation
+if r(c.clientId)then
+c.workers:QueueOperation(D,E,G,F)
 else
-DeferScriptMappingUntilTransport(C,D,F,E)
+DeferScriptMappingUntilTransport(D,E,G,F)
 end
 end
 
 local function ResumeDeferredScriptMappings()
-if not q(c.clientId)then return end
+if not r(c.clientId)then return end
 
-for C,D in c.jobs do
-if D.generation==c.generation and D.state=="deferred"then
-c:SetJobState(D,"queued")
-c.workers:QueueOperation(D.script,D.prepared,D.generation,C)
+for D,E in c.jobs do
+if E.generation==c.generation and E.state=="deferred"then
+c:SetJobState(E,"queued")
+c.workers:QueueOperation(E.script,E.prepared,E.generation,D)
 end
 end
 end
 
-local function StartScriptMapping(C)
-if not q(C)then return end
+local function StartScriptMapping(D)
+if not r(D)then return end
 
-c.clientId=C
-w(true,c.generation,C)
+c.clientId=D
+x(true,c.generation,D)
 
 if not c.descendantConnection then
-c.descendantConnection=game.DescendantAdded:Connect(function(D)
-if not D:IsA"LuaSourceContainer"then
+c.descendantConnection=game.DescendantAdded:Connect(function(E)
+if not E:IsA"LuaSourceContainer"then
 return
 end
 
-if not IsCandidateScriptForMapping(D)then return end
-QueueScriptForMapping(D)
+if not IsCandidateScriptForMapping(E)then return end
+QueueScriptForMapping(E)
 end)
 end
 
 if c.initialScanRunning or c.initialScanFinished then return end
 c.initialScanRunning=true
-local D=c.generation
+local E=c.generation
 
 
 task.spawn(function()
-local E={}
-local F=false
-local G,H=pcall(function()
-local G={
+local F={}
+local G=false
+local H,I=pcall(function()
+local H={
 game:QueryDescendants"LuaSourceContainer",
 j()
 }
-local H={}
+local I={}
 
-for I,J in G do
-for K,L in J do
-if D~=c.generation then return end
-local M,N=pcall(function()
-if not L:IsA"LuaSourceContainer"then return nil end
-if not IsCandidateScriptForMapping(L)then return nil end
-return L:GetDebugId()
+for J,K in H do
+for L,M in K do
+if E~=c.generation then return end
+local N,O=pcall(function()
+if not M:IsA"LuaSourceContainer"then return nil end
+if not IsCandidateScriptForMapping(M)then return nil end
+return M:GetDebugId()
 end)
-if not M then
-warn("[Roblox Executor MCP] Skipped unreadable script candidate: "..tostring(N))
+if not N then
+warn("[Roblox Executor MCP] Skipped unreadable script candidate: "..tostring(O))
 continue
 end
-if not N then continue end
-if H[N]then continue end
-H[N]=true
-if not TrackScriptForMapping(N)then continue end
-AttachScriptToMappingJob(c.jobs[N],L)
-table.insert(E,{script=L,debugId=N})
+if not O then continue end
+if I[O]then continue end
+I[O]=true
+if not TrackScriptForMapping(O)then continue end
+AttachScriptToMappingJob(c.jobs[O],M)
+table.insert(F,{script=M,debugId=O})
 end
 end
 
 m:Publish()
 
-local I={}
 local J={}
+local K={}
 local function flushPreparedScripts()
-t(C,I)
-for K,L in J do
-if D~=c.generation then return end
-if q(C)then
-c.workers:QueueOperation(L.script,nil,D,L.debugId)
+u(D,J)
+for L,M in K do
+if E~=c.generation then return end
+if r(D)then
+c.workers:QueueOperation(M.script,nil,E,M.debugId)
 else
-DeferScriptMappingUntilTransport(L.script,nil,D,L.debugId)
+DeferScriptMappingUntilTransport(M.script,nil,E,M.debugId)
 end
 end
-table.clear(I)
 table.clear(J)
+table.clear(K)
 end
 
-for K,L in E do
-if D~=c.generation then return end
-local M=u(L.script)
-if M then table.insert(I,M)end
-table.insert(J,L)
+for L,M in F do
+if E~=c.generation then return end
+local N=v(M.script)
+if N then table.insert(J,N)end
+table.insert(K,M)
 
-if#J>=A then
+if#K>=B then
 flushPreparedScripts()
 end
-if K%250==0 then task.wait()end
+if L%250==0 then task.wait()end
 end
 flushPreparedScripts()
 
-F=true
+G=true
 end)
 
-if D~=c.generation then return end
+if E~=c.generation then return end
 c.initialScanRunning=false
-if G and F then
+if H and G then
 c.initialScanFinished=true
 c.stateVersion+=1
 PublishCurrentMappingStatus()
 return
 end
 
-for I,J in E do
-local K=c.jobs[J.debugId]
-if c:CanDeferScanJob(K,D)then
-local L,M=pcall(
+for J,K in F do
+local L=c.jobs[K.debugId]
+if c:CanDeferScanJob(L,E)then
+local M,N=pcall(
 DeferScriptMappingUntilTransport,
-J.script,
-K.prepared,
-D,
-J.debugId
+K.script,
+L.prepared,
+E,
+K.debugId
 )
-if not L then
-warn("[Roblox Executor MCP] Failed to defer scan job: "..tostring(M))
-local N,O=pcall(
+if not M then
+warn("[Roblox Executor MCP] Failed to defer scan job: "..tostring(N))
+local O,P=pcall(
 RetryScriptMapping,
-J.script,
-K.prepared,
-D,
-tostring(M),
-J.debugId
+K.script,
+L.prepared,
+E,
+tostring(N),
+K.debugId
 )
-if not N then
+if not O then
 m:MarkFailed(
-J.debugId,
-"Scan recovery failed: "..tostring(O),
+K.debugId,
+"Scan recovery failed: "..tostring(P),
 false
 )
 end
 end
 end
 end
-warn("[Roblox Executor MCP] Initial script scan will retry: "..tostring(H or"bridge changed during scan"))
+warn("[Roblox Executor MCP] Initial script scan will retry: "..tostring(I or"bridge changed during scan"))
 task.delay(1,function()
 ResumeDeferredScriptMappings()
-StartScriptMapping(C)
+StartScriptMapping(D)
 end)
 end)
 end
 
-local function ResetScriptMappingState(C)
-local D=c.descendantConnection
-local E=c.generation+1
-local F=e.new(
+local function ResetScriptMappingState(D)
+local E=c.descendantConnection
+local F=c.generation+1
+local G=e.new(
 f(),
 DateTime.now().UnixTimestampMillis,
-E
+F
 )
-c:Reset(C,F)
-x()
+c:Reset(D,G)
+y()
 
-if D then
-D:Disconnect()
+if E then
+E:Disconnect()
 c.descendantConnection=nil
 end
 
@@ -1957,18 +2147,19 @@ c.workers:SetMaxConcurrent(c.currentWorkers)
 c.workers:Reset()
 end
 
-r()
+s()
 end
 
 return{
-DecompileScriptSource=s,
+DecompileScriptSource=t,
 GetScriptByDebugId=GetScriptByDebugId,
 QueueMappedScriptSource=QueueMappedScriptSource,
 ResetScriptMappingState=ResetScriptMappingState,
 ResumeDeferredScriptMappings=ResumeDeferredScriptMappings,
+StartFailedScriptResync=StartFailedScriptResync,
 StartScriptMapping=StartScriptMapping,
 }
-end end function a.k():typeof(__modImpl())local b=a.cache.k if not b then b={c=__modImpl()}a.cache.k=b end return b.c end end do local function __modImpl()
+end end function a.l():typeof(__modImpl())local b=a.cache.l if not b then b={c=__modImpl()}a.cache.l=b end return b.c end end do local function __modImpl()
 
 return function(b,c)
 local d=b.LogService
@@ -2060,7 +2251,7 @@ local f=table.pack(loadstring(e.source)())
 
 return f
 end)
-end end function a.l():typeof(__modImpl())local b=a.cache.l if not b then b={c=__modImpl()}a.cache.l=b end return b.c end end do local function __modImpl()
+end end function a.m():typeof(__modImpl())local b=a.cache.m if not b then b={c=__modImpl()}a.cache.m=b end return b.c end end do local function __modImpl()
 
 return function(b,c)
 local d=b.ScriptMappingPipeline
@@ -2139,7 +2330,7 @@ end
 
 return"-- Lines "..s.."-"..u.." of "..q.."\n"..table.concat(v,"\n")..w
 end)
-end end function a.m():typeof(__modImpl())local b=a.cache.m if not b then b={c=__modImpl()}a.cache.m=b end return b.c end end do local function __modImpl()
+end end function a.n():typeof(__modImpl())local b=a.cache.n if not b then b={c=__modImpl()}a.cache.n=b end return b.c end end do local function __modImpl()
 
 return function(b,c)
 local d=b.MarketplaceService
@@ -2312,7 +2503,7 @@ p.Note="Output capped at "..m.." nodes. Narrow with classFilter, lower maxDepth,
 end
 return p
 end)
-end end function a.n():typeof(__modImpl())local b=a.cache.n if not b then b={c=__modImpl()}a.cache.n=b end return b.c end end do local function __modImpl()
+end end function a.o():typeof(__modImpl())local b=a.cache.o if not b then b={c=__modImpl()}a.cache.o=b end return b.c end end do local function __modImpl()
 
 return function(b,c)
 c:BindToType("ensure-remote-spy",function(d)
@@ -2447,7 +2638,7 @@ count=#l,
 results=l
 }
 end)
-end end function a.o():typeof(__modImpl())local b=a.cache.o if not b then b={c=__modImpl()}a.cache.o=b end return b.c end end do local function __modImpl()
+end end function a.p():typeof(__modImpl())local b=a.cache.p if not b then b={c=__modImpl()}a.cache.p=b end return b.c end end do local function __modImpl()
 
 return function(b,c)
 c:BindToType("clear-remote-spy-logs",function(d)
@@ -2581,7 +2772,7 @@ end
 
 error("Invalid remote-spy operation: "..tostring(e))
 end)
-end end function a.p():typeof(__modImpl())local b=a.cache.p if not b then b={c=__modImpl()}a.cache.p=b end return b.c end end do local function __modImpl()
+end end function a.q():typeof(__modImpl())local b=a.cache.q if not b then b={c=__modImpl()}a.cache.q=b end return b.c end end do local function __modImpl()
 
 return function(b,c)
 local d=b.VirtualInputManager
@@ -2688,7 +2879,7 @@ status="success",
 message="Successfully fired click signals on Button."
 }
 end)
-end end function a.q():typeof(__modImpl())local b=a.cache.q if not b then b={c=__modImpl()}a.cache.q=b end return b.c end end do local function __modImpl()
+end end function a.r():typeof(__modImpl())local b=a.cache.r if not b then b={c=__modImpl()}a.cache.r=b end return b.c end end do local function __modImpl()
 
 return function(b)
 local c=b.CreateBridge
@@ -2698,57 +2889,59 @@ local f=b.StartUploadQueue
 local g=b.PublishScriptMappingStatus
 local h=b.ResetScriptMappingState
 local i=b.StartScriptMapping
-local j=b.ResumeDeferredScriptMappings
+local j=b.StartFailedScriptResync
+local k=b.ResumeDeferredScriptMappings
 
 while true do
-local k,l=pcall(c)
+local l,m=pcall(c)
 
-if not k then
+if not l then
 task.wait(3)
 continue
 end
 
-local m=d(l)
-if m then
-e.bridge=l
+local n=d(m)
+if n then
+e.bridge=m
 f()
 
-if e.clientId~=m then
-h(m)
+if e.clientId~=n then
+h(n)
 end
 
 if not getgenv().DisableInitialScriptDecompMapping then
-i(m)
+i(n)
 j()
+k()
 g()
 else
-e.clientId=m
+e.clientId=n
 e.disabled=true
 e.stateVersion+=1
 g()
 end
 end
 
-local n={a.l()
-,a.m()
+local o={a.m()
 ,a.n()
 ,a.o()
 ,a.p()
 ,a.q()
+,a.r()
 ,
 }
-for o,p in n do
-p(b,l)
+for p,q in o do
+q(b,m)
 end
 
-l:WaitForDisconnect()
+m:WaitForDisconnect()
 
-if e.bridge==l then
+if e.bridge==m then
 e.bridge=nil
 end
 task.wait(1)
 end
-end end function a.r():typeof(__modImpl())local b=a.cache.r if not b then b={c=__modImpl()}a.cache.r=b end return b.c end end end
+end end function a.s():typeof(__modImpl())local b=a.cache.s if not b then b={c=__modImpl()}a.cache.s=b end return b.c end end end
 
 
 
@@ -2961,14 +3154,29 @@ local E=a.g().new(
 C,
 D
 )
-local F=a.h().new(C)
-local G=a.i(){
+local F=math.max(
+5,
+math.min(tonumber(getgenv().MCP_FailedScriptResyncInterval)or 30,600)
+)
+local G=a.h().new(C,{
+IntervalSeconds=F,
+MaxDelaySeconds=math.max(F,300),
+BatchSize=math.max(
+1,
+math.min(math.floor(tonumber(getgenv().MCP_FailedScriptResyncBatchSize)or 8),32)
+),
+})
+local H=a.i().new(
+C,
+G
+)
+local I=a.j(){
 ScriptMappingPipeline=C,
 HttpService=j,
 BridgeURL=b,
-JobStatus=F,
+JobStatus=H,
 }
-local H=a.j(){
+local J=a.k(){
 ScriptMappingPipeline=C,
 HttpService=j,
 BridgeURL=b,
@@ -2980,7 +3188,7 @@ DecompilerAttemptState=A,
 PreparedScript=B,
 Concurrency=E,
 }
-local I=a.k(){
+local K=a.l(){
 ScriptMappingPipeline=C,
 WorkerPool=x,
 UploadSession=z,
@@ -2991,48 +3199,51 @@ ScriptContext=i,
 getnilinstances=t,
 WorkerCount=D,
 Concurrency=E,
-JobStatus=F,
-UploadClient=G,
-DecompilerClient=H,
+JobStatus=H,
+FailedResync=G,
+UploadClient=I,
+DecompilerClient=J,
 }
-local J=G.StartUploadQueue
+local L=I.StartUploadQueue
 local function PublishScriptMappingStatus()
-F:Publish()
+H:Publish()
 end
-local K=I.StartScriptMapping
-local L=I.ResetScriptMappingState
-local M=I.ResumeDeferredScriptMappings
-local N=I.GetScriptByDebugId
-local O=I.QueueMappedScriptSource
-local P=I.DecompileScriptSource
+local M=K.StartScriptMapping
+local N=K.StartFailedScriptResync
+local O=K.ResetScriptMappingState
+local P=K.ResumeDeferredScriptMappings
+local Q=K.GetScriptByDebugId
+local R=K.QueueMappedScriptSource
+local S=K.DecompileScriptSource
 
-local function WaitForBridgeClientId(Q)
-local R=os.clock()+5
+local function WaitForBridgeClientId(T)
+local U=os.clock()+5
 repeat
-if Q.ClientId then
-return Q.ClientId
+if T.ClientId then
+return T.ClientId
 end
-if not Q.Connected then
+if not T.Connected then
 return nil
 end
 task.wait(0.05)
-until os.clock()>R
+until os.clock()>U
 
 return nil
-end a.r()
+end a.s()
 
 {
 CreateBridge=w,
 WaitForBridgeClientId=WaitForBridgeClientId,
 ScriptMappingPipeline=C,
-StartUploadQueue=J,
+StartUploadQueue=L,
 PublishScriptMappingStatus=PublishScriptMappingStatus,
-ResetScriptMappingState=L,
-StartScriptMapping=K,
-ResumeDeferredScriptMappings=M,
-GetScriptByDebugId=N,
-DecompileScriptSource=P,
-QueueMappedScriptSource=O,
+ResetScriptMappingState=O,
+StartScriptMapping=M,
+StartFailedScriptResync=N,
+ResumeDeferredScriptMappings=P,
+GetScriptByDebugId=Q,
+DecompileScriptSource=S,
+QueueMappedScriptSource=R,
 LogService=k,
 MarketplaceService=f,
 RobloxReplicatedStorage=d,
