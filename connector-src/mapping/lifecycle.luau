@@ -353,7 +353,6 @@ local function StartScriptMapping(clientId)
                         return script:GetDebugId()
                     end)
                     if not candidateOk then
-                        warn("[Roblox Executor MCP] Skipped unreadable script candidate: " .. tostring(debugId))
                         continue
                     end
                     if not debugId then continue end
@@ -419,7 +418,6 @@ local function StartScriptMapping(clientId)
                     item.debugId
                 )
                 if not deferredOk then
-                    warn("[Roblox Executor MCP] Failed to defer scan job: " .. tostring(deferredError))
                     local retryOk, retryError = pcall(
                         RetryScriptMapping,
                         item.script,
@@ -438,7 +436,6 @@ local function StartScriptMapping(clientId)
                 end
             end
         end
-        warn("[Roblox Executor MCP] Initial script scan will retry: " .. tostring(scanError or "bridge changed during scan"))
         task.delay(1, function()
             ResumeDeferredScriptMappings()
             StartScriptMapping(clientId)

@@ -408,16 +408,11 @@ table.unpack(f,1,f.n)
 )
 if not g then
 if c.OnError then
-local i=pcall(
+pcall(
 c.OnError,
 h,
 table.unpack(f,1,f.n)
 )
-if not i then
-warn("[Roblox Executor MCP] Worker error handler failed: "..tostring(h))
-end
-else
-warn("[Roblox Executor MCP] Worker failed: "..tostring(h))
 end
 end
 end
@@ -804,10 +799,7 @@ if c.thread then return end
 c.thread=c.taskLibrary.spawn(function()
 while true do
 c.taskLibrary.wait(c.intervalSeconds)
-local e,f=pcall(d)
-if not e then
-warn("[Roblox Executor MCP] Failed-script resync tick failed: "..tostring(f))
-end
+pcall(d)
 end
 end)
 end
@@ -2016,8 +2008,8 @@ local E=c.generation
 
 task.spawn(function()
 local F={}
-local G=false
-local H,I=pcall(function()
+local G=false local
+H=pcall(function()
 local H={
 game:QueryDescendants"LuaSourceContainer",
 j()
@@ -2033,7 +2025,6 @@ if not IsCandidateScriptForMapping(M)then return nil end
 return M:GetDebugId()
 end)
 if not N then
-warn("[Roblox Executor MCP] Skipped unreadable script candidate: "..tostring(O))
 continue
 end
 if not O then continue end
@@ -2088,37 +2079,35 @@ PublishCurrentMappingStatus()
 return
 end
 
-for J,K in F do
-local L=c.jobs[K.debugId]
-if c:CanDeferScanJob(L,E)then
-local M,N=pcall(
+for I,J in F do
+local K=c.jobs[J.debugId]
+if c:CanDeferScanJob(K,E)then
+local L,M=pcall(
 DeferScriptMappingUntilTransport,
-K.script,
-L.prepared,
+J.script,
+K.prepared,
 E,
-K.debugId
+J.debugId
 )
-if not M then
-warn("[Roblox Executor MCP] Failed to defer scan job: "..tostring(N))
-local O,P=pcall(
+if not L then
+local N,O=pcall(
 RetryScriptMapping,
-K.script,
-L.prepared,
+J.script,
+K.prepared,
 E,
-tostring(N),
-K.debugId
+tostring(M),
+J.debugId
 )
-if not O then
+if not N then
 m:MarkFailed(
-K.debugId,
-"Scan recovery failed: "..tostring(P),
+J.debugId,
+"Scan recovery failed: "..tostring(O),
 false
 )
 end
 end
 end
 end
-warn("[Roblox Executor MCP] Initial script scan will retry: "..tostring(I or"bridge changed during scan"))
 task.delay(1,function()
 ResumeDeferredScriptMappings()
 StartScriptMapping(D)

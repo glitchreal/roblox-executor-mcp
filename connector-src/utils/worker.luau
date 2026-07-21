@@ -41,16 +41,11 @@ function WorkerPool:DrainQueue(expectedGeneration)
                 )
                 if not callbackOk then
                     if self.OnError then
-                        local handled = pcall(
+                        pcall(
                             self.OnError,
                             callbackError,
                             table.unpack(taskData, 1, taskData.n)
                         )
-                        if not handled then
-                            warn("[Roblox Executor MCP] Worker error handler failed: " .. tostring(callbackError))
-                        end
-                    else
-                        warn("[Roblox Executor MCP] Worker failed: " .. tostring(callbackError))
                     end
                 end
             end

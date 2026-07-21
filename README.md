@@ -95,6 +95,8 @@ If you prefer to configure a client yourself, use the setup guide for your clien
 | Codex CLI      | [Setup Guide](docs/setup-codex.md)          |
 | Windsurf       | [Setup Guide](docs/setup-windsurf.md)       |
 | Antigravity    | [Setup Guide](docs/setup-antigravity.md)    |
+| BLACKBOX AI    | [Setup Guide](docs/setup-blackbox.md)       |
+| ZCode          | [Setup Guide](docs/setup-zcode.md)          |
 
 ### 3. Connect from Roblox
 

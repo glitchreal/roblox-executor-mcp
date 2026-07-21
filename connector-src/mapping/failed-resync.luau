@@ -75,10 +75,7 @@ function FailedResync:Start(onTick)
     self.thread = self.taskLibrary.spawn(function()
         while true do
             self.taskLibrary.wait(self.intervalSeconds)
-            local ok, errorMessage = pcall(onTick)
-            if not ok then
-                warn("[Roblox Executor MCP] Failed-script resync tick failed: " .. tostring(errorMessage))
-            end
+            pcall(onTick)
         end
     end)
 end

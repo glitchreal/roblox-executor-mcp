@@ -45,6 +45,7 @@ const ALL_HARNESSES = [
   { id: "github-copilot", name: "GitHub Copilot", group: "Recommended", config: { kind: "mcpServersJson", path: homePath(".copilot", "mcp-config.json") } },
   { id: "vscode-copilot", name: "VS Code Copilot", group: "Recommended", config: { kind: "vscodeCli" } },
   { id: "amp", name: "Amp", group: "Others", config: { kind: "ampJson", path: vscodeSettingsPath(), experimental: true } },
+  { id: "blackbox", name: "BLACKBOX AI (VS Code)", group: "Others", config: { kind: "mcpServersJson", path: vscodeGlobalStoragePath("blackboxapp.blackboxagent", "settings", "blackbox_mcp_settings.json") } },
   { id: "cline", name: "Cline", group: "Others", config: { kind: "mcpServersJson", path: homePath(".cline", "data", "settings", "cline_mcp_settings.json") } },
   { id: "claude-desktop", name: "Claude Desktop", group: "Others", config: { kind: "mcpServersJson", paths: claudeDesktopConfigPaths() } },
   { id: "deep-agents", name: "Deep Agents", group: "Others", config: { kind: "mcpServersJson", path: homePath(".deepagents", ".mcp.json"), experimental: true } },
@@ -63,6 +64,7 @@ const ALL_HARNESSES = [
   { id: "roo-code", name: "Roo Code", group: "Others", config: { kind: "mcpServersJson", path: vscodeGlobalStoragePath("rooveterinaryinc.roo-cline", "settings", "mcp_settings.json"), experimental: true } },
   { id: "tabnine-cli", name: "Tabnine CLI", group: "Others", config: { kind: "mcpServersJson", path: homePath(".tabnine", "mcp_servers.json"), experimental: true } },
   { id: "windsurf", name: "Windsurf", group: "Others", config: { kind: "mcpServersJson", path: homePath(".codeium", "windsurf", "mcp_config.json") } },
+  { id: "zcode", name: "ZCode", group: "Others", config: { kind: "zcodeJson", path: homePath(".zcode", "cli", "config.json") } },
   { id: "manual", name: "Manual", group: "Others", config: { kind: "manualRecipe" } },
 ];
 
@@ -219,9 +221,8 @@ async function main() {
     log(item.status, item.message);
   }
 
-  if (selected.has("manual")) {
-    console.log(`\n${colors.yellow}Manual MCP recipe:${colors.reset}`);
-    console.log(JSON.stringify({ mcpServers: { [SERVER_NAME]: mcpServerConfig(serverEntry) } }, null, 2));
+  for (const harness of selectedHarnesses.filter((item) => item.config.kind === "manualRecipe")) {
+    printManualMcpRecipe(harness, serverEntry);
   }
 
   const restartList = selectedHarnesses.length > 0
@@ -1364,6 +1365,9 @@ async function configureHarness(harness, serverEntry, results) {
       case "vscodeCli":
         await configureVsCodeCopilot(serverEntry);
         break;
+      case "zcodeJson":
+        await writeZcodeJson(harness.config.path, serverEntry);
+        break;
       case "manualRecipe":
         results.push({ status: "warn", message: `${harness.name}: printed manual MCP recipe.` });
         return;
@@ -1610,6 +1614,22 @@ async function writeMcpServersJson(filePath, serverEntry, extra = {}) {
   json.mcpServers = json.mcpServers && typeof json.mcpServers === "object" ? json.mcpServers : {};
   json.mcpServers[SERVER_NAME] = { ...mcpServerConfig(serverEntry), ...extra };
   await writeJson(filePath, json);
+}
+
+async function writeZcodeJson(filePath, serverEntry) {
+  const json = await readJson(filePath, {});
+  json.mcp = json.mcp && typeof json.mcp === "object" ? json.mcp : {};
+  json.mcp.servers = json.mcp.servers && typeof json.mcp.servers === "object" ? json.mcp.servers : {};
+  json.mcp.servers[SERVER_NAME] = mcpServerConfig(serverEntry);
+  await writeJson(filePath, json);
+}
+
+function printManualMcpRecipe(harness, serverEntry) {
+  console.log(`\n${colors.yellow}${harness.name} MCP recipe:${colors.reset}`);
+  for (const instruction of harness.config.instructions || []) {
+    console.log(`  ${instruction}`);
+  }
+  console.log(JSON.stringify({ mcpServers: { [SERVER_NAME]: mcpServerConfig(serverEntry) } }, null, 2));
 }
 
 function configPaths(config) {
@@ -2320,6 +2340,10 @@ function detectHarnessAvailability(harness) {
       commandCheck("amp"),
       extensionCheck("amp"),
     ],
+    blackbox: [
+      extensionCheck("blackboxapp.blackbox"),
+      extensionCheck("blackbox"),
+    ],
     cline: [
       pathCheck(homePath(".cline")),
       extensionCheck("saoudrizwan.claude-dev"),
@@ -2412,6 +2436,12 @@ function detectHarnessAvailability(harness) {
       commandCheck("windsurf"),
       appCheck("Windsurf"),
       pathCheck(homePath(".codeium", "windsurf")),
+      configCheck(harness),
+    ],
+    zcode: [
+      commandCheck("zcode"),
+      appCheck("ZCode"),
+      pathCheck(homePath(".zcode")),
       configCheck(harness),
     ],
     manual: [],
