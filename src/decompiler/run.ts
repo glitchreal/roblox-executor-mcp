@@ -1,7 +1,8 @@
 import {
-  DECOMPILER_PROVIDER_IDS,
   DEFAULT_DECOMPILER_RUNTIME_SETTINGS,
   DEFAULT_PROVIDER_TIMEOUTS_MS,
+  isCustomDecompilerProviderId,
+  isDecompilerProviderId,
   type DecompilerProviderId,
   type DecompilerProviderSettings,
   type DecompilerRuntimeSettings,
@@ -13,6 +14,7 @@ import {
   recordDecompilerProviderSuccess,
   shouldSkipDecompilerProvider,
 } from "./health.js";
+import { compileCustomDecompilerWorkflow } from "./custom-workflow.js";
 
 export interface DecompileInput {
   bytecodeBase64: string;
@@ -64,14 +66,13 @@ function providerDisplayName(id: DecompilerProviderId, provider: DecompilerProvi
   if (id === "oracle") return "Oracle";
   if (id === "konstant") return "Konstant";
   if (id === "fission") return "Fission";
+  if (isCustomDecompilerProviderId(id)) {
+    const name = provider.options.name;
+    return typeof name === "string" && name.trim()
+      ? name.trim().replace(/\s+/g, " ").slice(0, 80)
+      : "custom provider";
+  }
   return "built-in";
-}
-
-function isProviderId(value: unknown): value is DecompilerProviderId {
-  return (
-    typeof value === "string" &&
-    (DECOMPILER_PROVIDER_IDS as readonly string[]).includes(value)
-  );
 }
 
 function providerLoad(id: DecompilerProviderId): ProviderLoadState {
@@ -108,7 +109,7 @@ function cleanDisabledProviders(value: unknown[] | undefined): Set<DecompilerPro
   const disabled = new Set<DecompilerProviderId>();
   if (!Array.isArray(value)) return disabled;
   for (const item of value) {
-    if (isProviderId(item)) disabled.add(item);
+    if (isDecompilerProviderId(item)) disabled.add(item);
   }
   return disabled;
 }
@@ -325,6 +326,235 @@ async function runOracle(
   );
 }
 
+function customOptionString(
+  provider: DecompilerProviderSettings,
+  key: string,
+  fallback: string
+): string {
+  const value = provider.options[key];
+  return typeof value === "string" && value.trim() ? value.trim() : fallback;
+}
+
+function customOptionTemplate(
+  provider: DecompilerProviderSettings,
+  key: string,
+  fallback: string
+): string {
+  const value = provider.options[key];
+  return typeof value === "string" ? value : fallback;
+}
+
+function customHeaders(provider: DecompilerProviderSettings): Record<string, string> {
+  const configured = provider.options.headers;
+  const headers: Record<string, string> = {};
+  if (configured && typeof configured === "object" && !Array.isArray(configured)) {
+    for (const [name, value] of Object.entries(configured)) {
+      if (typeof value === "string" && name.trim()) headers[name.trim()] = value;
+    }
+  }
+
+  if (provider.apiKey) {
+    const configuredHeader = provider.options.apiKeyHeader;
+    const header = typeof configuredHeader === "string"
+      ? configuredHeader.trim()
+      : "Authorization";
+    if (!header) return headers;
+    const configuredPrefix = provider.options.apiKeyPrefix;
+    const prefix = typeof configuredPrefix === "string" ? configuredPrefix.trim() : "Bearer";
+    const existingHeader = Object.keys(headers).find(
+      (name) => name.toLowerCase() === header.toLowerCase()
+    );
+    if (existingHeader) delete headers[existingHeader];
+    headers[header] = prefix ? `${prefix} ${provider.apiKey}` : provider.apiKey;
+  }
+  return headers;
+}
+
+type CustomTemplateValue = string | Buffer;
+
+function customTemplateVariables(
+  provider: DecompilerProviderSettings,
+  bytecode: Buffer,
+  bytecodeBase64: string
+): Record<string, CustomTemplateValue> {
+  const values: Record<string, CustomTemplateValue> = { api_key: provider.apiKey };
+  const configured = provider.options.requestVariables;
+  if (!Array.isArray(configured)) return values;
+  for (const item of configured) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+    const name = (item as Record<string, unknown>).name;
+    const value = (item as Record<string, unknown>).value;
+    if (typeof name !== "string") continue;
+    if (value === "bytecode") values[name] = bytecode;
+    else if (value === "base64") values[name] = bytecodeBase64;
+  }
+  return values;
+}
+
+function renderCustomTemplate(
+  template: string,
+  values: Record<string, CustomTemplateValue>
+): string {
+  return template.replace(/\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}/g, (_match, name: string) => {
+    const value = values[name];
+    const text = Buffer.isBuffer(value) ? value.toString("base64") : String(value ?? "");
+    return JSON.stringify(text).slice(1, -1);
+  });
+}
+
+function renderCustomHeadersTemplate(
+  template: string,
+  values: Record<string, CustomTemplateValue>
+): Record<string, string> {
+  const parsed: unknown = JSON.parse(renderCustomTemplate(template, values));
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("Rendered request headers must be a JSON object.");
+  }
+  const headers: Record<string, string> = {};
+  for (const [name, value] of Object.entries(parsed)) {
+    if (typeof value !== "string") throw new Error("Rendered request header values must be strings.");
+    if (name.trim()) headers[name.trim()] = value;
+  }
+  return headers;
+}
+
+function renderCustomBodyTemplate(
+  template: string,
+  values: Record<string, CustomTemplateValue>
+): { body: BodyInit; binary: boolean } {
+  const exact = /^\s*\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}\s*$/.exec(template);
+  const exactValue = exact ? values[exact[1]] : undefined;
+  if (Buffer.isBuffer(exactValue)) {
+    return { body: bufferToArrayBuffer(exactValue), binary: true };
+  }
+  return { body: renderCustomTemplate(template, values), binary: false };
+}
+
+function setDefaultHeader(
+  headers: Record<string, string>,
+  name: string,
+  value: string
+): void {
+  const exists = Object.keys(headers).some(
+    (header) => header.toLowerCase() === name.toLowerCase()
+  );
+  if (!exists) headers[name] = value;
+}
+
+function valueAtJsonPath(value: unknown, path: string): unknown {
+  if (!path) return value;
+  let current = value;
+  for (const segment of path.split(".").filter(Boolean)) {
+    if (!current || typeof current !== "object") return undefined;
+    current = (current as Record<string, unknown>)[segment];
+  }
+  return current;
+}
+
+async function runCustom(
+  provider: DecompilerProviderSettings,
+  bytecode: Buffer,
+  bytecodeBase64: string,
+  timeoutMs: number
+): Promise<ProviderRunResult> {
+  let effectiveProvider = provider;
+  try {
+    const workflow = compileCustomDecompilerWorkflow(provider.options.workflow);
+    if (workflow) {
+      effectiveProvider = {
+        ...provider,
+        endpoint: workflow.endpoint,
+        options: { ...provider.options, ...workflow },
+      };
+    }
+  } catch (error) {
+    return {
+      ok: false,
+      error: `Invalid custom provider workflow: ${error instanceof Error ? error.message : String(error)}`,
+      latencyMs: 0,
+    };
+  }
+
+  const requestFormat = customOptionString(effectiveProvider, "requestFormat", "json-script");
+  const headers = customHeaders(effectiveProvider);
+  let body: BodyInit;
+
+  if (requestFormat === "template") {
+    const values = customTemplateVariables(effectiveProvider, bytecode, bytecodeBase64);
+    const headersTemplate = customOptionTemplate(effectiveProvider, "requestHeadersTemplate", "{}");
+    const bodyTemplate = customOptionTemplate(effectiveProvider, "requestBodyTemplate", "");
+    try {
+      Object.assign(headers, renderCustomHeadersTemplate(headersTemplate, values));
+      const rendered = renderCustomBodyTemplate(bodyTemplate, values);
+      body = rendered.body;
+      if (rendered.binary) setDefaultHeader(headers, "Content-Type", "application/octet-stream");
+      else {
+        try {
+          JSON.parse(String(body));
+          setDefaultHeader(headers, "Content-Type", "application/json");
+        } catch {
+          setDefaultHeader(headers, "Content-Type", "text/plain");
+        }
+      }
+    } catch (error) {
+      return {
+        ok: false,
+        error: `Could not render custom request template: ${error instanceof Error ? error.message : String(error)}`,
+        latencyMs: 0,
+      };
+    }
+  } else if (requestFormat === "plain-base64") {
+    setDefaultHeader(headers, "Content-Type", "text/plain");
+    body = bytecodeBase64;
+  } else if (requestFormat === "plain-bytecode") {
+    setDefaultHeader(headers, "Content-Type", "application/octet-stream");
+    body = bufferToArrayBuffer(bytecode);
+  } else if (requestFormat === "json-script") {
+    setDefaultHeader(headers, "Content-Type", "application/json");
+    const requestField = customOptionString(effectiveProvider, "requestField", "script");
+    body = JSON.stringify({ [requestField]: bytecodeBase64 });
+  } else {
+    return {
+      ok: false,
+      error: `Unsupported custom request format: ${requestFormat}`,
+      latencyMs: 0,
+    };
+  }
+
+  const result = await fetchText(
+    resolveProviderEndpoint(effectiveProvider.endpoint),
+    { method: "POST", headers, body },
+    timeoutMs
+  );
+  if (!result.ok || typeof result.result !== "string") return result;
+
+  if (customOptionString(effectiveProvider, "responseFormat", "text") !== "json") {
+    return result;
+  }
+
+  try {
+    const parsed: unknown = JSON.parse(result.result);
+    const responseField = customOptionString(effectiveProvider, "responseField", "source");
+    const source = valueAtJsonPath(parsed, responseField);
+    if (typeof source !== "string") {
+      return {
+        ...result,
+        ok: false,
+        result: undefined,
+        error: `Custom provider JSON response did not contain a string at "${responseField}".`,
+      };
+    }
+    return { ...result, result: source };
+  } catch {
+    return {
+      ...result,
+      ok: false,
+      result: undefined,
+      error: "Custom provider returned invalid JSON.",
+    };
+  }
+}
+
 async function runProvider(options: {
   id: DecompilerProviderId;
   provider: DecompilerProviderSettings;
@@ -363,6 +593,14 @@ async function runProvider(options: {
   if (options.id === "oracle") {
     return runOracle(options.provider, options.bytecodeBase64, options.timeoutMs);
   }
+  if (isCustomDecompilerProviderId(options.id)) {
+    return runCustom(
+      options.provider,
+      options.bytecode,
+      options.bytecodeBase64,
+      options.timeoutMs
+    );
+  }
 
   return {
     ok: false,
@@ -386,7 +624,7 @@ export function resolveDecompilerProviders(
 ): ResolvedDecompilerProviders {
   const runtime = runtimeOrDefault(settings.runtime);
   const disabledProviders = cleanDisabledProviders(options.disabledProviders);
-  const requestedProvider = isProviderId(options.requestedProvider)
+  const requestedProvider = isDecompilerProviderId(options.requestedProvider)
     ? options.requestedProvider
     : null;
   const candidates: DecompilerProviderId[] = [];

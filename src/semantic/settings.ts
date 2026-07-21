@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { withFileTransaction, writeJsonAtomic } from "../shared/atomic-json.js";
 
 export type SemanticProvider = "openai" | "ollama";
 
@@ -131,29 +132,25 @@ export async function loadSemanticSettings(): Promise<SemanticSettings> {
 }
 
 export async function saveSemanticSettings(input: SemanticSettingsInput): Promise<SemanticSettings> {
-  const existing = await loadSemanticSettings();
-  const next: SemanticSettings = {
-    enabled: typeof input.enabled === "boolean" ? input.enabled : existing.enabled,
-    provider: normalizeProvider(input.provider, existing.provider),
-    openaiApiKey:
-      typeof input.openaiApiKey === "string" ? input.openaiApiKey.trim() : existing.openaiApiKey,
-    openaiBaseUrl: normalizeOpenAIBaseUrl(input.openaiBaseUrl, existing.openaiBaseUrl),
-    openaiModel: normalizeString(input.openaiModel, existing.openaiModel),
-    ollamaBaseUrl: normalizeOllamaBaseUrl(input.ollamaBaseUrl, existing.ollamaBaseUrl),
-    ollamaModel: normalizeString(input.ollamaModel, existing.ollamaModel),
-    saveEmbeddingsToDisk:
-      typeof input.saveEmbeddingsToDisk === "boolean"
-        ? input.saveEmbeddingsToDisk
-        : existing.saveEmbeddingsToDisk,
-  };
-
-  await fs.mkdir(SEMANTIC_CONFIG_DIR, { recursive: true });
-  await fs.writeFile(SEMANTIC_SETTINGS_PATH, JSON.stringify(next, null, 2) + "\n", {
-    mode: 0o600,
+  return withFileTransaction(SEMANTIC_SETTINGS_PATH, async () => {
+    const existing = await loadSemanticSettings();
+    const next: SemanticSettings = {
+      enabled: typeof input.enabled === "boolean" ? input.enabled : existing.enabled,
+      provider: normalizeProvider(input.provider, existing.provider),
+      openaiApiKey:
+        typeof input.openaiApiKey === "string" ? input.openaiApiKey.trim() : existing.openaiApiKey,
+      openaiBaseUrl: normalizeOpenAIBaseUrl(input.openaiBaseUrl, existing.openaiBaseUrl),
+      openaiModel: normalizeString(input.openaiModel, existing.openaiModel),
+      ollamaBaseUrl: normalizeOllamaBaseUrl(input.ollamaBaseUrl, existing.ollamaBaseUrl),
+      ollamaModel: normalizeString(input.ollamaModel, existing.ollamaModel),
+      saveEmbeddingsToDisk:
+        typeof input.saveEmbeddingsToDisk === "boolean"
+          ? input.saveEmbeddingsToDisk
+          : existing.saveEmbeddingsToDisk,
+    };
+    await writeJsonAtomic(SEMANTIC_SETTINGS_PATH, next);
+    return next;
   });
-  await fs.chmod(SEMANTIC_SETTINGS_PATH, 0o600).catch(() => undefined);
-
-  return next;
 }
 
 export function toPublicSemanticSettings(settings: SemanticSettings): PublicSemanticSettings {

@@ -40,6 +40,7 @@ const ALL_HARNESSES = [
   { id: "claude-code", name: "Claude Code", group: "Recommended", config: { kind: "claudeCli" } },
   { id: "opencode", name: "OpenCode", group: "Recommended", config: { kind: "opencodeJson", path: homePath(".config", "opencode", "opencode.json") } },
   { id: "cursor", name: "Cursor", group: "Recommended", config: { kind: "mcpServersJson", path: homePath(".cursor", "mcp.json") } },
+  { id: "trae", name: "Trae", group: "Recommended", config: { kind: "mcpServersJson", path: traeConfigPath() } },
   { id: "antigravity", name: "Antigravity", group: "Recommended", config: { kind: "mcpServersJson", path: antigravityConfigPath() } },
   { id: "gemini-cli", name: "Gemini CLI", group: "Recommended", config: { kind: "mcpServersJson", path: homePath(".gemini", "settings.json"), extra: { trust: true } } },
   { id: "github-copilot", name: "GitHub Copilot", group: "Recommended", config: { kind: "mcpServersJson", path: homePath(".copilot", "mcp-config.json") } },
@@ -127,7 +128,11 @@ const HARNESS_RESTART_SPECS = {
   },
 };
 
-const NON_INTERACTIVE = process.argv.includes("--yes") || process.argv.includes("-y");
+const EXPLICIT_HARNESS_IDS = parseHarnessIds(getArgValue("--harnesses"));
+const LIST_HARNESSES_MODE = process.argv.includes("--list-harnesses-json");
+const INSTALL_ONLY_MODE = process.argv.includes("--install-only");
+const JSON_RESULT_MODE = process.argv.includes("--json-result");
+const NON_INTERACTIVE = process.argv.includes("--yes") || process.argv.includes("-y") || EXPLICIT_HARNESS_IDS.length > 0;
 const DRY_RUN = process.argv.includes("--dry-run");
 const UPDATE_MODE = process.argv.includes("--update");
 const GET_SCRIPT_MODE = process.argv.includes("--get-script");
@@ -153,6 +158,20 @@ main().catch((error) => {
 });
 
 async function main() {
+  if (LIST_HARNESSES_MODE) {
+    console.log(JSON.stringify(ALL_HARNESSES.filter((harness) => harness.id !== "manual").map((harness) => {
+      const availability = HARNESS_AVAILABILITY.get(harness.id) || { detected: false, reason: "" };
+      return {
+        id: harness.id,
+        name: harness.name,
+        group: harness.group,
+        detected: availability.detected === true,
+        reason: availability.reason || "",
+      };
+    })));
+    return;
+  }
+
   if (GET_SCRIPT_MODE) {
     await runGetScriptMode();
     return;
@@ -163,7 +182,15 @@ async function main() {
     return;
   }
 
-  const initial = new Set();
+  const unknownHarnessIds = EXPLICIT_HARNESS_IDS.filter((id) => !ALL_HARNESSES.some((harness) => harness.id === id && id !== "manual"));
+  if (unknownHarnessIds.length) {
+    throw new Error(`Unknown harness${unknownHarnessIds.length === 1 ? "" : "es"}: ${unknownHarnessIds.join(", ")}`);
+  }
+  if (INSTALL_ONLY_MODE && !EXPLICIT_HARNESS_IDS.length) {
+    throw new Error("--install-only requires at least one harness via --harnesses.");
+  }
+
+  const initial = new Set(EXPLICIT_HARNESS_IDS);
   const selected = NON_INTERACTIVE ? initial : await selectHarnesses(initial);
   if (!NON_INTERACTIVE) {
     console.log(`${colors.green}Selected harnesses:${colors.reset} ${formatSelection(selected)}`);
@@ -192,7 +219,14 @@ async function main() {
   if (shouldPull) {
     await pullLatest(serverRoot, results);
   }
-  await installServer(serverRoot, results);
+  if (INSTALL_ONLY_MODE) {
+    if (!exists(serverEntry)) {
+      throw new Error(`Server entry is missing at ${serverEntry}. Build the server before configuring a harness.`);
+    }
+    results.push({ status: "ok", message: `Using existing server entry at ${serverEntry}` });
+  } else {
+    await installServer(serverRoot, results);
+  }
 
   if (crossMachine) {
     section("Network Setup");
@@ -213,6 +247,17 @@ async function main() {
   }
   for (const harness of selectedHarnesses) {
     await configureHarness(harness, serverEntry, results);
+    if (INSTALL_ONLY_MODE && JSON_RESULT_MODE) {
+      const result = results.findLast((item) => item.message.startsWith(`${harness.name}:`));
+      console.log(`HARNESS_RESULT_JSON=${JSON.stringify({
+        harness: {
+          id: harness.id,
+          name: harness.name,
+          ok: result?.status === "ok",
+          error: result?.status === "ok" ? null : result?.message.replace(`${harness.name}:`, "").trim() || "Configuration failed.",
+        },
+      })}`);
+    }
   }
   await maybeRestartHarnesses(selectedHarnesses, results);
 
@@ -229,6 +274,30 @@ async function main() {
     ? selectedHarnesses.map((h) => h.name).join(", ")
     : "selected harnesses";
   const restartedHarnesses = results.some((item) => /: restarted$/.test(item.message));
+  if (INSTALL_ONLY_MODE) {
+    const harnessResults = selectedHarnesses.map((harness) => {
+      const result = results.find((item) => item.message.startsWith(`${harness.name}:`));
+      return {
+        id: harness.id,
+        name: harness.name,
+        ok: result?.status === "ok",
+        error: result?.status === "ok" ? null : result?.message.replace(`${harness.name}:`, "").trim() || "Configuration failed.",
+      };
+    });
+    const failedHarnesses = harnessResults.filter((result) => !result.ok);
+    if (JSON_RESULT_MODE) {
+      console.log(`HARNESS_RESULT_JSON=${JSON.stringify({ harnesses: harnessResults })}`);
+    }
+    if (failedHarnesses.length) {
+      process.exitCode = 1;
+      console.log(`\n${colors.red}Install incomplete.${colors.reset} Review the harness errors above.`);
+    } else {
+      console.log(`\n${colors.green}Done.${colors.reset} Restart ${restartList} to load the MCP server.`);
+    }
+    showCursor();
+    return;
+  }
+
   const doneText = restartedHarnesses || selectedHarnesses.length === 0
     ? "Connect Roblox with:"
     : `Restart ${restartList}, then connect Roblox with:`;
@@ -1384,7 +1453,7 @@ async function configureHarness(harness, serverEntry, results) {
 }
 
 async function maybeRestartHarnesses(selectedHarnesses, results) {
-  if (NON_INTERACTIVE || !selectedHarnesses.length) return;
+  if (INSTALL_ONLY_MODE || NON_INTERACTIVE || !selectedHarnesses.length) return;
 
   const restartable = findRestartableHarnesses(selectedHarnesses);
   if (!restartable.length) return;
@@ -2313,6 +2382,10 @@ function detectHarnessAvailability(harness) {
       commandCheck("cursor-agent"),
       appCheck("Cursor"),
       pathCheck(homePath(".cursor")),
+      configCheck(harness),
+    ],
+    trae: [
+      appCheck("Trae"),
       configCheck(harness),
     ],
     antigravity: [
@@ -3463,6 +3536,11 @@ function getArgValue(flag) {
   return value && !value.startsWith("--") ? value : null;
 }
 
+function parseHarnessIds(value) {
+  if (!value) return [];
+  return [...new Set(String(value).split(",").map((id) => id.trim()).filter(Boolean))];
+}
+
 function normalizeServerName(value) {
   const trimmed = String(value || "").trim();
   if (!trimmed) return DEFAULT_SERVER_NAME;
@@ -3478,6 +3556,16 @@ function antigravityConfigPath() {
     return homePath(".gemini", "config", "mcp_config.json");
   }
   return homePath(".gemini", "antigravity", "mcp_config.json");
+}
+
+function traeConfigPath() {
+  const appData =
+    process.platform === "win32"
+      ? process.env.APPDATA || homePath("AppData", "Roaming")
+      : process.platform === "darwin"
+        ? homePath("Library", "Application Support")
+        : process.env.XDG_CONFIG_HOME || homePath(".config");
+  return path.join(appData, "Trae", "User", "settings", "mcp.json");
 }
 
 function expandHome(value) {

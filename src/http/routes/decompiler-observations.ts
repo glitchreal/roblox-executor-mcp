@@ -1,7 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "http";
 import { recordDecompilerProviderObservation } from "../../decompiler/health.js";
 import {
-  DECOMPILER_PROVIDER_IDS,
+  isDecompilerProviderId,
   loadDecompilerSettings,
   type DecompilerProviderId,
 } from "../../decompiler/settings.js";
@@ -30,10 +30,7 @@ function number(value: unknown): number | undefined {
 }
 
 function providerId(value: unknown): DecompilerProviderId | undefined {
-  return typeof value === "string" &&
-    (DECOMPILER_PROVIDER_IDS as readonly string[]).includes(value)
-    ? (value as DecompilerProviderId)
-    : undefined;
+  return isDecompilerProviderId(value) ? value : undefined;
 }
 
 export async function POST(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -53,6 +50,11 @@ export async function POST(req: IncomingMessage, res: ServerResponse): Promise<v
     }
 
     const settings = await loadDecompilerSettings();
+    if (!settings.providers[id]) {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Provider is not configured." }));
+      return;
+    }
     const accepted = recordDecompilerProviderObservation({
       id,
       runtime: settings.runtime,

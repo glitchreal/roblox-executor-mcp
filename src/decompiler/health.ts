@@ -1,5 +1,5 @@
 import {
-  DECOMPILER_PROVIDER_IDS,
+  isDecompilerProviderId,
   type DecompilerProviderId,
   type DecompilerRuntimeSettings,
 } from "./settings.js";
@@ -58,13 +58,6 @@ interface DecompilerProviderHealthState {
 
 const healthByClientAndProvider = new Map<string, DecompilerProviderHealthState>();
 const THROUGHPUT_IDLE_RESET_MS = 2000;
-
-function isProviderId(value: unknown): value is DecompilerProviderId {
-  return (
-    typeof value === "string" &&
-    (DECOMPILER_PROVIDER_IDS as readonly string[]).includes(value)
-  );
-}
 
 function cleanNumber(value: unknown): number | undefined {
   if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
@@ -176,7 +169,11 @@ function toSnapshot(
   };
 }
 
-export function reportDecompilerHealth(clientId: string, providers: unknown): void {
+export function reportDecompilerHealth(
+  clientId: string,
+  providers: unknown,
+  allowedProviderIds?: ReadonlySet<string>,
+): void {
   const source = Array.isArray(providers)
     ? providers
     : providers && typeof providers === "object"
@@ -189,10 +186,11 @@ export function reportDecompilerHealth(clientId: string, providers: unknown): vo
   const cleanClientId = cleanString(clientId, 160) ?? "unknown";
   const now = Date.now();
 
-  for (const raw of source) {
+  for (const raw of source.slice(0, 64)) {
     if (!raw || typeof raw !== "object") continue;
     const item = raw as Record<string, unknown>;
-    if (!isProviderId(item.id)) continue;
+    if (!isDecompilerProviderId(item.id)) continue;
+    if (allowedProviderIds && !allowedProviderIds.has(item.id)) continue;
 
     const health = getProviderHealth(item.id, cleanClientId);
     health.clientId = cleanClientId;

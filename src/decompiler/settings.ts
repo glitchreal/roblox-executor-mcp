@@ -1,6 +1,8 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { compileCustomDecompilerWorkflow } from "./custom-workflow.js";
+import { withFileTransaction, writeJsonAtomic } from "../shared/atomic-json.js";
 
 export const DECOMPILER_PROVIDER_IDS = [
   "builtin",
@@ -9,9 +11,12 @@ export const DECOMPILER_PROVIDER_IDS = [
   "oracle",
   "konstant",
   "fission",
+  "custom",
 ] as const;
 
-export type DecompilerProviderId = (typeof DECOMPILER_PROVIDER_IDS)[number];
+export type BuiltInDecompilerProviderId = (typeof DECOMPILER_PROVIDER_IDS)[number];
+export type CustomDecompilerProviderId = `custom:${string}`;
+export type DecompilerProviderId = BuiltInDecompilerProviderId | CustomDecompilerProviderId;
 
 export interface DecompilerProviderInfo {
   id: DecompilerProviderId;
@@ -19,7 +24,13 @@ export interface DecompilerProviderInfo {
   description: string;
   local: boolean;
   requiresApiKey: boolean;
-  bodyFormat: "builtin" | "json-script" | "plain-base64" | "plain-bytecode" | "oracle-json";
+  bodyFormat:
+    | "builtin"
+    | "json-script"
+    | "plain-base64"
+    | "plain-bytecode"
+    | "oracle-json"
+    | "configurable";
 }
 
 export interface DecompilerProviderSettings {
@@ -38,12 +49,12 @@ export interface DecompilerRuntimeSettings {
   cooldownMs: number;
   slowSuccessLimit: number;
   timeoutLimit: number;
-  providerTimeoutsMs: Record<DecompilerProviderId, number>;
+  providerTimeoutsMs: Record<string, number>;
 }
 
 export interface DecompilerSettings {
   providerOrder: DecompilerProviderId[];
-  providers: Record<DecompilerProviderId, DecompilerProviderSettings>;
+  providers: Record<string, DecompilerProviderSettings>;
   runtime: DecompilerRuntimeSettings;
 }
 
@@ -55,7 +66,7 @@ export interface PublicDecompilerProviderSettings
 
 export interface PublicDecompilerSettings {
   providerOrder: DecompilerProviderId[];
-  providers: Record<DecompilerProviderId, PublicDecompilerProviderSettings>;
+  providers: Record<string, PublicDecompilerProviderSettings>;
   providerInfo: DecompilerProviderInfo[];
   runtime: DecompilerRuntimeSettings;
   health?: unknown;
@@ -127,9 +138,17 @@ export const DECOMPILER_PROVIDER_INFO: DecompilerProviderInfo[] = [
     requiresApiKey: false,
     bodyFormat: "plain-base64",
   },
+  {
+    id: "custom",
+    label: "Custom",
+    description: "User-configured HTTP decompiler endpoint.",
+    local: false,
+    requiresApiKey: false,
+    bodyFormat: "configurable",
+  },
 ];
 
-const DEFAULT_PROVIDERS: Record<DecompilerProviderId, DecompilerProviderSettings> = {
+const DEFAULT_PROVIDERS: Record<BuiltInDecompilerProviderId, DecompilerProviderSettings> = {
   builtin: {
     enabled: true,
     endpoint: "",
@@ -172,15 +191,32 @@ const DEFAULT_PROVIDERS: Record<DecompilerProviderId, DecompilerProviderSettings
     version: null,
     options: {},
   },
+  custom: {
+    enabled: false,
+    endpoint: "",
+    apiKey: "",
+    version: null,
+    options: {
+      name: "Custom",
+      requestFormat: "json-script",
+      requestField: "script",
+      responseFormat: "text",
+      responseField: "source",
+      apiKeyHeader: "Authorization",
+      apiKeyPrefix: "Bearer",
+      headers: {},
+    },
+  },
 };
 
-export const DEFAULT_PROVIDER_TIMEOUTS_MS: Record<DecompilerProviderId, number> = {
+export const DEFAULT_PROVIDER_TIMEOUTS_MS: Record<string, number> = {
   builtin: 8000,
   luaexpert: 10000,
   shiny: 6000,
   oracle: 15000,
   konstant: 10000,
   fission: 6000,
+  custom: 10000,
 };
 
 export const DEFAULT_DECOMPILER_RUNTIME_SETTINGS: DecompilerRuntimeSettings = {
@@ -195,7 +231,7 @@ export const DEFAULT_DECOMPILER_RUNTIME_SETTINGS: DecompilerRuntimeSettings = {
 };
 
 export const DEFAULT_DECOMPILER_SETTINGS: DecompilerSettings = {
-  providerOrder: ["builtin", "luaexpert", "shiny", "oracle", "konstant", "fission"],
+  providerOrder: ["builtin", "luaexpert", "shiny", "oracle", "konstant", "fission", "custom"],
   providers: DEFAULT_PROVIDERS,
   runtime: DEFAULT_DECOMPILER_RUNTIME_SETTINGS,
 };
@@ -204,15 +240,25 @@ function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function isProviderId(value: unknown): value is DecompilerProviderId {
+export function isCustomDecompilerProviderId(
+  value: unknown
+): value is "custom" | CustomDecompilerProviderId {
+  return (
+    value === "custom" ||
+    (typeof value === "string" && /^custom:[a-zA-Z0-9_-]{1,80}$/.test(value))
+  );
+}
+
+export function isDecompilerProviderId(value: unknown): value is DecompilerProviderId {
   return (
     typeof value === "string" &&
-    (DECOMPILER_PROVIDER_IDS as readonly string[]).includes(value)
+    ((DECOMPILER_PROVIDER_IDS as readonly string[]).includes(value) ||
+      isCustomDecompilerProviderId(value))
   );
 }
 
 function toProviderId(value: unknown): DecompilerProviderId | null {
-  if (isProviderId(value)) return value;
+  if (isDecompilerProviderId(value)) return value;
   if (value === "medal") return "shiny";
   return null;
 }
@@ -231,8 +277,8 @@ function cloneSettings(settings: DecompilerSettings): DecompilerSettings {
   return {
     providerOrder: [...settings.providerOrder],
     providers: Object.fromEntries(
-      DECOMPILER_PROVIDER_IDS.map((id) => [id, cloneProvider(settings.providers[id])])
-    ) as Record<DecompilerProviderId, DecompilerProviderSettings>,
+      Object.entries(settings.providers).map(([id, provider]) => [id, cloneProvider(provider)])
+    ),
     runtime: cloneRuntimeSettings(settings.runtime),
   };
 }
@@ -309,7 +355,8 @@ function normalizeNumber(
 
 function normalizeRuntimeSettings(
   value: unknown,
-  fallback: DecompilerRuntimeSettings
+  fallback: DecompilerRuntimeSettings,
+  providerIds: DecompilerProviderId[]
 ): DecompilerRuntimeSettings {
   const input = isObject(value) ? value : {};
   const inputTimeouts = isObject(input.providerTimeoutsMs) ? input.providerTimeoutsMs : {};
@@ -340,16 +387,18 @@ function normalizeRuntimeSettings(
     ),
     timeoutLimit: normalizeNumber(input.timeoutLimit, fallback.timeoutLimit, 1, 20),
     providerTimeoutsMs: Object.fromEntries(
-      DECOMPILER_PROVIDER_IDS.map((id) => [
+      providerIds.map((id) => [
         id,
         normalizeNumber(
           inputTimeouts[id],
-          fallbackTimeouts[id] ?? DEFAULT_PROVIDER_TIMEOUTS_MS[id],
+          fallbackTimeouts[id] ??
+            DEFAULT_PROVIDER_TIMEOUTS_MS[id] ??
+            DEFAULT_PROVIDER_TIMEOUTS_MS.custom,
           500,
           60000
         ),
       ])
-    ) as Record<DecompilerProviderId, number>,
+    ),
   };
 }
 
@@ -364,7 +413,8 @@ function normalizeProviderOrderSource(
 
 function normalizeProviderOrder(
   value: unknown,
-  fallback: DecompilerProviderId[]
+  fallback: DecompilerProviderId[],
+  providerIds: DecompilerProviderId[]
 ): DecompilerProviderId[] {
   const source = normalizeProviderOrderSource(value, fallback);
 
@@ -376,7 +426,7 @@ function normalizeProviderOrder(
   if (!order.includes("builtin")) {
     order.unshift("builtin");
   }
-  for (const id of DECOMPILER_PROVIDER_IDS) {
+  for (const id of providerIds) {
     if (!order.includes(id)) order.push(id);
   }
   return order;
@@ -418,16 +468,39 @@ function normalizeProvider(
   };
 }
 
+function configuredProviderIds(
+  inputProviders: Record<string, unknown>,
+  fallback: DecompilerSettings,
+  inputOrder: unknown
+): DecompilerProviderId[] {
+  const ids: DecompilerProviderId[] = [...DECOMPILER_PROVIDER_IDS];
+  const candidates = [
+    ...Object.keys(fallback.providers),
+    ...Object.keys(inputProviders),
+    ...normalizeProviderOrderSource(inputOrder, fallback.providerOrder),
+  ];
+  for (const candidate of candidates) {
+    const id = toProviderId(candidate);
+    if (id && !ids.includes(id)) ids.push(id);
+  }
+  return ids;
+}
+
 function normalizeSettings(value: unknown, fallback: DecompilerSettings): DecompilerSettings {
   const input = isObject(value) ? value : {};
   const inputProviders = isObject(input.providers) ? input.providers : {};
+  const providerIds = configuredProviderIds(inputProviders, fallback, input.providerOrder);
 
   const providers = Object.fromEntries(
-    DECOMPILER_PROVIDER_IDS.map((id) => {
-      const fallbackProvider = fallback.providers[id] ?? DEFAULT_PROVIDERS[id];
+    providerIds.map((id) => {
+      const fallbackProvider =
+        fallback.providers[id] ??
+        (isCustomDecompilerProviderId(id)
+          ? DEFAULT_PROVIDERS.custom
+          : DEFAULT_PROVIDERS[id as BuiltInDecompilerProviderId]);
       return [id, normalizeProvider(id, inputProviders[id], fallbackProvider)];
     })
-  ) as Record<DecompilerProviderId, DecompilerProviderSettings>;
+  );
   providers.shiny = withShinyMode(providers.shiny);
 
   if (isObject(inputProviders.medal)) {
@@ -451,13 +524,27 @@ function normalizeSettings(value: unknown, fallback: DecompilerSettings): Decomp
   }
 
   return {
-    providerOrder: normalizeProviderOrder(input.providerOrder, fallback.providerOrder),
+    providerOrder: normalizeProviderOrder(
+      input.providerOrder,
+      fallback.providerOrder,
+      providerIds
+    ),
     providers,
-    runtime: normalizeRuntimeSettings(input.runtime, fallback.runtime),
+    runtime: normalizeRuntimeSettings(input.runtime, fallback.runtime, providerIds),
   };
 }
 
-function providerLabel(id: DecompilerProviderId): string {
+export function normalizeDecompilerSettingsInput(
+  value: unknown,
+  fallback: DecompilerSettings = DEFAULT_DECOMPILER_SETTINGS
+): DecompilerSettings {
+  return normalizeSettings(value, fallback);
+}
+
+function providerLabel(id: DecompilerProviderId, provider?: DecompilerProviderSettings): string {
+  if (isCustomDecompilerProviderId(id)) {
+    return normalizeString(provider?.options.name, "Custom provider");
+  }
   return DECOMPILER_PROVIDER_INFO.find((provider) => provider.id === id)?.label ?? id;
 }
 
@@ -466,7 +553,7 @@ export function decompilerSettingsIssues(settings: DecompilerSettings): string[]
   for (const id of settings.providerOrder) {
     const provider = settings.providers[id];
     if (!provider?.enabled) continue;
-    const label = providerLabel(id);
+    const label = providerLabel(id, provider);
 
     if (id === "oracle" && !provider.apiKey) {
       issues.push(`${label}: Authorization required. Add an Oracle API key before this provider can run.`);
@@ -474,6 +561,15 @@ export function decompilerSettingsIssues(settings: DecompilerSettings): string[]
 
     if (id !== "builtin" && !provider.endpoint.trim()) {
       issues.push(`${label}: Endpoint required. Open provider settings and add a URL.`);
+    }
+    if (isCustomDecompilerProviderId(id) && provider.options.workflow !== undefined) {
+      try {
+        compileCustomDecompilerWorkflow(provider.options.workflow);
+      } catch (error) {
+        issues.push(
+          `${label}: Invalid workflow. ${error instanceof Error ? error.message : String(error)}`
+        );
+      }
     }
   }
   return issues;
@@ -511,25 +607,21 @@ export async function loadDecompilerSettings(): Promise<DecompilerSettings> {
 export async function saveDecompilerSettings(
   input: DecompilerSettingsInput
 ): Promise<DecompilerSettings> {
-  const existing = await loadDecompilerSettings();
-  const next = normalizeSettings(input, existing);
-  const issues = decompilerSettingsIssues(next);
-  if (issues.length) {
-    throw new Error(`Fix decompiler provider issues before saving: ${issues.join(" ")}`);
-  }
+  return withFileTransaction(DECOMPILER_SETTINGS_PATH, async () => {
+    const existing = await loadDecompilerSettings();
+    const next = normalizeSettings(input, existing);
+    const issues = decompilerSettingsIssues(next);
+    if (issues.length) {
+      throw new Error(`Fix decompiler provider issues before saving: ${issues.join(" ")}`);
+    }
 
-  await fs.mkdir(DECOMPILER_CONFIG_DIR, { recursive: true });
-  await fs.writeFile(DECOMPILER_SETTINGS_PATH, JSON.stringify(next, null, 2) + "\n", {
-    mode: 0o600,
+    await writeJsonAtomic(DECOMPILER_SETTINGS_PATH, next);
+    decompilerSettingsCache = {
+      settings: cloneSettings(next),
+      expiresAt: Date.now() + DECOMPILER_SETTINGS_CACHE_MS,
+    };
+    return next;
   });
-  await fs.chmod(DECOMPILER_SETTINGS_PATH, 0o600).catch(() => undefined);
-
-  decompilerSettingsCache = {
-    settings: cloneSettings(next),
-    expiresAt: Date.now() + DECOMPILER_SETTINGS_CACHE_MS,
-  };
-
-  return next;
 }
 
 export function toPublicDecompilerSettings(
@@ -537,8 +629,7 @@ export function toPublicDecompilerSettings(
   health?: unknown
 ): PublicDecompilerSettings {
   const providers = Object.fromEntries(
-    DECOMPILER_PROVIDER_IDS.map((id) => {
-      const provider = settings.providers[id];
+    Object.entries(settings.providers).map(([id, provider]) => {
       const key = provider.apiKey;
       return [
         id,
@@ -552,12 +643,26 @@ export function toPublicDecompilerSettings(
         },
       ];
     })
-  ) as Record<DecompilerProviderId, PublicDecompilerProviderSettings>;
+  );
+
+  const providerInfo = [
+    ...DECOMPILER_PROVIDER_INFO,
+    ...Object.entries(settings.providers)
+      .filter(([id]) => id !== "custom" && isCustomDecompilerProviderId(id))
+      .map(([id, provider]) => ({
+        id: id as CustomDecompilerProviderId,
+        label: providerLabel(id as CustomDecompilerProviderId, provider),
+        description: "User-configured HTTP decompiler workflow.",
+        local: false,
+        requiresApiKey: false,
+        bodyFormat: "configurable" as const,
+      })),
+  ];
 
   return {
     providerOrder: settings.providerOrder,
     providers,
-    providerInfo: DECOMPILER_PROVIDER_INFO,
+    providerInfo,
     runtime: cloneRuntimeSettings(settings.runtime),
     ...(health ? { health } : {}),
   };

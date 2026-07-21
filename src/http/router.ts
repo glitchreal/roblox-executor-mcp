@@ -9,6 +9,7 @@ import {
   type RouteHandler,
   type WsRouteHandler,
 } from "./types.js";
+import { isAuthorizedLocalAdminRequest } from "./local-admin.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const routesDir = path.join(__dirname, "routes");
@@ -29,6 +30,21 @@ const wsRoutes: RegisteredWsRoute[] = [];
 let defaultWsHandler: WsRouteHandler | null = null;
 
 const WS_FALLBACK_NAME = "_ws-fallback";
+const LOCAL_ADMIN_API_ROUTES = new Set([
+  "/api/client-setup",
+  "/api/dashboard-settings",
+  "/api/decompiler-settings",
+  "/api/decompiler-settings/connector",
+  "/api/decompiler-settings/setup",
+  "/api/semantic-settings",
+  "/api/semantic-settings/test",
+]);
+
+export function requiresLocalAdmin(req: IncomingMessage, pathname: string): boolean {
+  if (LOCAL_ADMIN_API_ROUTES.has(pathname)) return true;
+  if (pathname === "/api/server-logs" && req.method === "DELETE") return true;
+  return pathname === "/api/scripts/source" && req.method === "PUT";
+}
 
 async function walk(dir: string): Promise<string[]> {
   const out: string[] = [];
@@ -126,6 +142,15 @@ export function loadRoutes(): Promise<void> {
 
 export async function dispatchHttp(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const url = new URL(req.url || "/", `http://localhost`);
+
+  if (
+    requiresLocalAdmin(req, url.pathname) &&
+    !isAuthorizedLocalAdminRequest(req)
+  ) {
+    res.writeHead(403, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+    res.end(JSON.stringify({ error: "Authorized local dashboard access required." }));
+    return;
+  }
 
   for (const route of httpRoutes) {
     if (route.path === url.pathname && route.method === req.method) {

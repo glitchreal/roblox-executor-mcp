@@ -1,3 +1,6 @@
+import { createClientSetup } from './client-setup.js';
+import { createThemeSettings } from './theme-settings.js';
+
 /* ── State ────────────────────────────────────────────────── */
 let selectedClientId = null;
 let currentView = 'clients';
@@ -15,6 +18,61 @@ let startTime = Date.now();
 
 /* ── DOM refs ────────────────────────────────────────────── */
 const $ = (id) => document.getElementById(id);
+
+let dashboardAdminTokenPromise = null;
+async function dashboardAdminToken() {
+    if (!dashboardAdminTokenPromise) {
+        dashboardAdminTokenPromise = fetch('/api/admin-session', { cache: 'no-store' })
+            .then(async (response) => {
+                const data = await response.json();
+                if (!response.ok || typeof data.token !== 'string') {
+                    throw new Error(data.error || 'Local dashboard authorization failed');
+                }
+                return data.token;
+            })
+            .catch((error) => {
+                dashboardAdminTokenPromise = null;
+                throw error;
+            });
+    }
+    return dashboardAdminTokenPromise;
+}
+
+async function dashboardApiFetch(input, init = {}, retryAuthorization = true) {
+    const headers = new Headers(init.headers || {});
+    headers.set('X-Roblox-MCP-Admin-Token', await dashboardAdminToken());
+    const response = await fetch(input, { ...init, headers });
+    if (response.status === 403 && retryAuthorization) {
+        dashboardAdminTokenPromise = null;
+        return dashboardApiFetch(input, init, false);
+    }
+    return response;
+}
+
+async function writeClipboardText(text) {
+    try {
+        await navigator.clipboard.writeText(text);
+    } catch {
+        const textarea = document.createElement('textarea');
+        textarea.value = text;
+        textarea.setAttribute('readonly', '');
+        textarea.style.position = 'fixed';
+        textarea.style.left = '-9999px';
+        document.body.appendChild(textarea);
+        textarea.select();
+        const copied = document.execCommand('copy');
+        textarea.remove();
+        if (!copied) throw new Error('Clipboard write failed');
+    }
+}
+
+function copyText(text, label) {
+    writeClipboardText(text).then(() => {
+        showToast((label || 'Text') + ' copied', 'success');
+    }).catch(() => {
+        showToast('Failed to copy', 'error');
+    });
+}
 
 const topbarSection = $('topbarSection');
 const topbarStatus = $('topbarStatus');
@@ -40,12 +98,6 @@ const sidebarNavClient = $('sidebarNavClient');
 
 const noClientSearch = $('noClientSearch');
 const noClientList = $('noClientList');
-const addClientBtn = $('addClientBtn');
-const addClientModal = $('addClientModal');
-const addClientCloseBtn = $('addClientCloseBtn');
-const addClientModalTitle = $('addClientModalTitle');
-const addClientModalDesc = $('addClientModalDesc');
-const addClientBody = $('addClientBody');
 
 const toolPanel = $('toolPanel');
 const toolPanelName = $('toolPanelName');
@@ -62,6 +114,16 @@ const scriptsCodeMenu = $('scriptsCodeMenu');
 const scriptsCodeSaveBtn = $('scriptsCodeSaveBtn');
 const scriptsCodeView = $('scriptsCodeView');
 const scriptsExportBtn = $('scriptsExportBtn');
+
+const themeSettings = createThemeSettings({
+    $,
+    escapeHtml,
+    showToast,
+    copyText,
+    dashboardApiFetch,
+    queueSettingsSave: task => queueLatestSettingsSave('dashboard', task),
+    scheduleSettingsAutoSave
+});
 
 const SHINY_LOCAL_ENDPOINT = 'http://localhost:3000/luau/decompile';
 const SHINY_HOSTED_ENDPOINT = 'https://medal.upio.dev/decompile';
@@ -80,7 +142,8 @@ const DEFAULT_DECOMPILER_RUNTIME = {
         shiny: 6000,
         oracle: 15000,
         konstant: 10000,
-        fission: 6000
+        fission: 6000,
+        custom: 10000
     }
 };
 
@@ -119,12 +182,19 @@ const decompilerProviderUi = {
         description: 'Local Fission HTTP server.',
         setupLabel: 'Download & setup Fission',
         setupDescription: 'Downloads the latest Fission server release and starts the local endpoint.'
+    },
+    custom: {
+        label: 'Custom provider',
+        byline: 'configurable HTTP endpoint',
+        description: 'Configure a custom HTTP decompiler endpoint and response format.'
     }
 };
 let decompilerDragId = null;
 let decompilerDragState = null;
 let decompilerModalProviderId = null;
+let customProviderEditor = null;
 let decompilerAdvancedOpen = true;
+let decompilerProviderAutoSaveTimer = null;
 let decompilerSetupState = {};
 let decompilerHealthRefreshInFlight = false;
 
@@ -393,715 +463,8 @@ function renderNoClientList(filter) {
     });
 }
 
-/* ── Add client setup wizard ─────────────────────────────── */
-let clientSetupData = null;
-let addClientMode = 'intro';
-let addClientTarget = 'roblox';
-let addClientGuideOpen = false;
-let addClientAdminPrompt = null;
-let addClientOutput = '';
-let addClientAutoexecOutput = '';
-let addClientAutoexecSelected = null;
-let addClientDirectBridge = 'localhost:16384';
-let addClientBridgeOverrides = {
-    localNetwork: '',
-    authorizedMachines: '',
-};
-
-const SETUP_ICONS = {
-    current: '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-laptop-icon lucide-laptop"><path d="M18 5a2 2 0 0 1 2 2v8.526a2 2 0 0 0 .212.897l1.068 2.127a1 1 0 0 1-.9 1.45H3.62a1 1 0 0 1-.9-1.45l1.068-2.127A2 2 0 0 0 4 15.526V7a2 2 0 0 1 2-2z"/><path d="M20.054 15.987H3.946"/></svg>',
-    network: '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-router-icon lucide-router"><rect width="20" height="8" x="2" y="14" rx="2"/><path d="M6.01 18H6"/><path d="M10.01 18H10"/><path d="M15 10v4"/><path d="M17.84 7.17a4 4 0 0 0-5.66 0"/><path d="M20.66 4.34a8 8 0 0 0-11.31 0"/></svg>',
-    tailscale: '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-globe-lock-icon lucide-globe-lock"><path d="M15.686 15A14.5 14.5 0 0 1 12 22a14.5 14.5 0 0 1 0-20 10 10 0 1 0 9.542 13"/><path d="M2 12h8.5"/><path d="M20 6V4a2 2 0 1 0-4 0v2"/><rect width="8" height="5" x="14" y="6" rx="1"/></svg>',
-    roblox: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="5" y="5" width="14" height="14" rx="2" transform="rotate(12 12 12)"/><rect x="10" y="10" width="4" height="4" rx="1"/></svg>',
-    mcp: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 3 4 7l8 4 8-4-8-4Z"/><path d="m4 12 8 4 8-4"/><path d="m4 17 8 4 8-4"/></svg>',
-    chevron: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m9 18 6-6-6-6"/></svg>',
-};
-
-const ADD_CLIENT_TARGETS = {
-    roblox: {
-        title: 'Roblox client',
-        shortTitle: 'Roblox',
-        codeTitle: 'Roblox connector',
-        action: 'Paste this in Roblox. It connects the game client only.',
-        description: 'Runs the Luau connector in Roblox. This does not relay host-side MCP tools.',
-    },
-    mcp: {
-        title: 'MCP relay',
-        shortTitle: 'MCP relay',
-        codeTitle: 'MCP config diff',
-        action: 'Add these entries to that MCP server args array on the other machine.',
-        description: 'Connects another MCP instance. This can relay host-side tools like screenshot-window.',
-    },
-};
-
-function normalizeDashboardBridgeUrl(value) {
-    const trimmed = String(value || '').trim().replace(/\/+$/, '');
-    if (!trimmed) return 'localhost:16384';
-    const withProtocol = /^https?:\/\//i.test(trimmed) ? trimmed : 'http://' + trimmed;
-    try {
-        const url = new URL(withProtocol);
-        if (!url.port) url.port = '16384';
-        return url.hostname + ':' + url.port;
-    } catch {
-        return 'localhost:16384';
-    }
-}
-
-function buildDashboardLoaderSnippet(bridgeUrl) {
-    const normalized = normalizeDashboardBridgeUrl(bridgeUrl);
-    if (normalized === 'localhost:16384') {
-        return 'while not getgenv().MCP_Loaded do\n    local bridgeUrl = getgenv().BridgeURL or "localhost:16384"\n    pcall(function() loadstring(game:HttpGet("http://" .. bridgeUrl .. "/script.luau"))() end)\n\n    task.wait(0.15)\nend';
-    }
-    return 'getgenv().BridgeURL = "' + normalized + '"\nwhile not getgenv().MCP_Loaded do\n    local bridgeUrl = getgenv().BridgeURL or "localhost:16384"\n    pcall(function() loadstring(game:HttpGet("http://" .. bridgeUrl .. "/script.luau"))() end)\n\n    task.wait(0.15)\nend';
-}
-
-function buildDashboardMcpRelaySnippet(bridgeUrl) {
-    const relayUrl = 'http://' + normalizeDashboardBridgeUrl(bridgeUrl);
-    return '{\n' +
-        '  "mcpServers": {\n' +
-        '    "roblox-mcp": {\n' +
-        '      "args": [\n' +
-        '        "...existing args",\n' +
-        '+       "--baseurl",\n' +
-        '+       "' + relayUrl + '"\n' +
-        '      ]\n' +
-        '    }\n' +
-        '  }\n' +
-        '}';
-}
-
-function buildDashboardMcpRelayCopySnippet(bridgeUrl) {
-    const relayUrl = 'http://' + normalizeDashboardBridgeUrl(bridgeUrl);
-    return '"--baseurl",\n"' + relayUrl + '"';
-}
-
-function makeConnector(bridgeUrl) {
-    const normalized = normalizeDashboardBridgeUrl(bridgeUrl);
-    return { bridgeUrl: normalized, loaderSnippet: buildDashboardLoaderSnippet(normalized) };
-}
-
-function getConnectorFor(mode) {
-    if (mode === 'directBridge') return makeConnector(addClientDirectBridge);
-
-    if (mode === 'currentMachine') {
-        return clientSetupData?.connectors?.currentMachine || makeConnector('localhost:16384');
-    }
-
-    const override = addClientBridgeOverrides[mode];
-    if (override) return makeConnector(override);
-
-    const connector = clientSetupData?.connectors?.[mode];
-    if (connector) return connector;
-
-    return null;
-}
-
-function getTargetCopy() {
-    return ADD_CLIENT_TARGETS[addClientTarget] || ADD_CLIENT_TARGETS.roblox;
-}
-
-function copyText(text, label) {
-    navigator.clipboard.writeText(text).then(() => {
-        showToast((label || 'Text') + ' copied', 'success');
-    }).catch(() => {
-        showToast('Failed to copy', 'error');
-    });
-}
-
-function shortenHomePath(path) {
-    if (!path) return '';
-    const home = path.replace(/^\/Users\/[^/]+/, '~');
-    if (home.length <= 56) return home;
-    const parts = home.split('/');
-    const file = parts.pop() || '';
-    const tail = parts.slice(-2).join('/');
-    return (tail ? '~/' + tail : '~') + '/' + file;
-}
-
-function renderAddClientLoading() {
-    addClientBody.innerHTML = '<div class="add-client-status">Loading setup options...</div>';
-}
-
-async function refreshClientSetupData() {
-    const res = await fetch('/api/client-setup');
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Failed to load setup options');
-    clientSetupData = data;
-    return data;
-}
-
-function openAddClientModal() {
-    addClientMode = 'intro';
-    addClientTarget = 'roblox';
-    addClientGuideOpen = false;
-    addClientAdminPrompt = null;
-    addClientOutput = '';
-    addClientAutoexecOutput = '';
-    addClientAutoexecSelected = null;
-    addClientDirectBridge = 'localhost:16384';
-    addClientModal.classList.add('open');
-    renderAddClientLoading();
-    refreshClientSetupData()
-        .then(renderAddClient)
-        .catch((error) => {
-            addClientBody.innerHTML = '<div class="add-client-status add-client-status--error">' + escapeHtml(error.message || error) + '</div>';
-        });
-}
-
-function closeAddClientModal() {
-    addClientModal.classList.remove('open');
-}
-
-function renderAddClient() {
-    if (addClientMode === 'intro') renderAddClientIntro();
-    else if (addClientMode === 'choices') renderAddClientChoices();
-    else if (addClientMode === 'directBridge') renderDirectBridge();
-    else if (addClientMode === 'currentMachine') renderConnectorChoice('currentMachine');
-    else if (addClientMode === 'localNetwork') renderConnectorChoice('localNetwork');
-    else if (addClientMode === 'authorizedMachines') renderAuthorizedMachines();
-    else renderAddClientIntro();
-    updateAddClientModalHeader();
-    syncAutoexecSelectAllUi();
-}
-
-function updateAddClientModalHeader() {
-    if (!addClientModalTitle || !addClientModalDesc) return;
-
-    let title = 'Connect';
-    let desc = '';
-    let descMono = false;
-
-    if (addClientMode === 'intro') {
-        desc = 'Roblox or another MCP instance.';
-    } else if (addClientMode === 'choices') {
-        desc = getTargetCopy().title;
-    } else if (addClientMode === 'currentMachine') {
-        title = 'This machine';
-        desc = getConnectorFor('currentMachine')?.bridgeUrl || 'localhost:16384';
-        descMono = true;
-    } else if (addClientMode === 'localNetwork') {
-        title = 'Local network';
-        const connector = getConnectorFor('localNetwork');
-        desc = connector?.bridgeUrl || 'Set bridge address';
-        descMono = Boolean(connector?.bridgeUrl);
-    } else if (addClientMode === 'authorizedMachines') {
-        title = 'Tailscale';
-        const ts = clientSetupData?.tailscale || {};
-        const connector = getConnectorFor('authorizedMachines');
-        if (connector?.bridgeUrl) {
-            desc = connector.bridgeUrl + (ts.ip ? ' · connected' : '');
-            descMono = true;
-        } else if (!ts.installed) {
-            desc = 'Not installed on this host';
-        } else {
-            desc = 'Not connected yet';
-        }
-    } else if (addClientMode === 'directBridge') {
-        title = 'Manual bridge';
-        desc = addClientDirectBridge || 'host:16384';
-        descMono = true;
-    }
-
-    addClientModalTitle.textContent = title;
-    addClientModalDesc.textContent = desc;
-    addClientModalDesc.hidden = !desc;
-    addClientModalDesc.classList.toggle('add-client-modal-desc--mono', descMono);
-}
-
-function renderAddClientIntro() {
-    addClientBody.innerHTML = '<div class="add-client-panel">' +
-        renderSafetyWarning() +
-        '<div class="add-client-intent-grid">' +
-        renderTargetChoice('roblox', SETUP_ICONS.roblox) +
-        renderTargetChoice('mcp', SETUP_ICONS.mcp) +
-        '</div>' +
-        '<div class="add-client-subactions">' +
-        '<button class="add-client-link-btn" data-action="skip-bridge">Enter bridge address manually</button>' +
-        '</div>' +
-        '</div>';
-}
-
-function renderSafetyWarning() {
-    return '<div class="add-client-warning">' +
-        '<strong>Keep port 16384 private.</strong>' +
-        '<span>Use localhost, your local network, SSH, or Tailscale. Do not port-forward this relay to the public internet.</span>' +
-        '</div>';
-}
-
-function renderTargetChoice(target, icon) {
-    const copy = ADD_CLIENT_TARGETS[target];
-    return '<button class="add-client-intent" data-action="choose-target" data-target="' + escapeHtml(target) + '">' +
-        '<span class="add-client-intent-icon">' + icon + '</span>' +
-        '<span class="add-client-intent-title">' + escapeHtml(copy.title) + '</span>' +
-        '<span class="add-client-intent-desc">' + escapeHtml(copy.description) + '</span>' +
-        '<span class="add-client-intent-meta">' + escapeHtml(copy.action) + '</span>' +
-        '</button>';
-}
-
-function renderAddClientChoices() {
-    const lan = clientSetupData?.lanIp ? clientSetupData.lanIp + ':16384' : 'Manual address';
-    const tail = clientSetupData?.tailscale?.ip ? clientSetupData.tailscale.ip + ':16384' : 'Tailscale address';
-    const target = getTargetCopy();
-    const routeCopy = addClientTarget === 'mcp'
-        ? {
-            current: 'Another MCP process is on this computer.',
-            network: 'Another MCP host is on this LAN.',
-            tailscale: 'Use Tailscale for an approved MCP relay.',
-        }
-        : {
-            current: 'Roblox is on this computer.',
-            network: 'Roblox is on another device on this network.',
-            tailscale: 'Use Tailscale for approved Roblox devices.',
-        };
-
-    addClientBody.innerHTML = '<div class="add-client-panel">' +
-        '<div class="add-client-top-row">' + renderBackButton() + renderSkipBridgeButton() + '</div>' +
-        '<div class="add-client-selected-target">' +
-        '<span>' + escapeHtml(target.title) + '</span>' +
-        '<button class="add-client-link-btn" data-action="change-target">Change</button>' +
-        '</div>' +
-        '<div class="add-client-options">' +
-        renderAddClientOption('currentMachine', SETUP_ICONS.current, 'This machine', routeCopy.current, 'localhost:16384') +
-        renderAddClientOption('localNetwork', SETUP_ICONS.network, 'Local network', routeCopy.network, lan) +
-        renderAddClientOption('authorizedMachines', SETUP_ICONS.tailscale, 'Authorized machines', routeCopy.tailscale, tail) +
-        '</div>' +
-        '</div>';
-}
-
-function renderAddClientOption(mode, icon, title, desc, meta) {
-    return '<button class="add-client-option" data-action="choose-setup" data-mode="' + escapeHtml(mode) + '">' +
-        '<span class="add-client-option-icon">' + icon + '</span>' +
-        '<span class="add-client-option-text"><span class="add-client-option-title">' + escapeHtml(title) + '</span><span class="add-client-option-desc">' + escapeHtml(desc) + '</span></span>' +
-        '<span class="add-client-option-meta">' + escapeHtml(meta) + ' ' + SETUP_ICONS.chevron + '</span>' +
-        '</button>';
-}
-
-function renderBackButton() {
-    return '<button class="add-client-back" data-action="setup-back">' +
-        '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m15 18-6-6 6-6"/></svg>' +
-        'Back</button>';
-}
-
-function renderSkipBridgeButton() {
-    return '<button class="add-client-link-btn" data-action="skip-bridge">Skip to connector</button>';
-}
-
-function renderTargetSwitch() {
-    return '<div class="add-client-target-tabs" role="group" aria-label="Connector type">' +
-        '<button class="add-client-target-tab' + (addClientTarget === 'roblox' ? ' active' : '') + '" data-action="set-target" data-target="roblox">Roblox</button>' +
-        '<button class="add-client-target-tab' + (addClientTarget === 'mcp' ? ' active' : '') + '" data-action="set-target" data-target="mcp">MCP relay</button>' +
-        '</div>';
-}
-
-function renderConnectorChoice(mode) {
-    const connector = getConnectorFor(mode);
-    const defaultBridge = mode === 'currentMachine'
-        ? 'localhost:16384'
-        : (clientSetupData?.lanIp ? clientSetupData.lanIp + ':16384' : '');
-    const needsManual = mode === 'localNetwork';
-
-    addClientBody.innerHTML = '<div class="add-client-panel">' +
-        '<div class="add-client-top-row">' + renderBackButton() + renderSkipBridgeButton() + '</div>' +
-        renderTargetSwitch() +
-        (needsManual ? renderBridgeInput(mode, defaultBridge, 'Bridge address', true) : '') +
-        (connector ? renderConnectorCode(connector) : '<p class="add-client-hint add-client-hint--warn">Enter an address to generate the connector.</p>') +
-        (connector && mode === 'currentMachine' && addClientTarget === 'roblox' ? renderAutoexecSetup(connector) : '') +
-        '</div>';
-}
-
-function renderDirectBridge() {
-    const connector = getConnectorFor('directBridge');
-    addClientBody.innerHTML = '<div class="add-client-panel">' +
-        '<div class="add-client-top-row">' + renderBackButton() + '</div>' +
-        renderSafetyWarning() +
-        renderTargetSwitch() +
-        renderBridgeInput('directBridge', addClientDirectBridge, 'Bridge address', true) +
-        renderConnectorCode(connector) +
-        '</div>';
-}
-
-function renderBridgeInput(mode, fallback, label, compact) {
-    const value = mode === 'directBridge'
-        ? addClientDirectBridge
-        : (addClientBridgeOverrides[mode] || fallback || '');
-    const placeholder = mode === 'authorizedMachines' ? 'Tailscale address (host:16384)' : 'host:16384';
-    const fieldClass = compact ? 'add-client-field add-client-field--compact' : 'add-client-field';
-    const labelHtml = compact
-        ? '<label class="sr-only" for="addClientBridgeInput">' + escapeHtml(label) + '</label>'
-        : '<label for="addClientBridgeInput">' + escapeHtml(label) + '</label>';
-    return '<div class="' + fieldClass + '">' +
-        labelHtml +
-        '<div class="add-client-input-row">' +
-        '<input class="add-client-input" id="addClientBridgeInput" data-mode="' + escapeHtml(mode) + '" value="' + escapeHtml(value) + '" placeholder="' + escapeHtml(placeholder) + '">' +
-        '<button class="add-client-btn" data-action="apply-bridge">Apply</button>' +
-        '</div></div>';
-}
-
-function renderConnectorCode(connector) {
-    const target = getTargetCopy();
-    const code = addClientTarget === 'mcp'
-        ? buildDashboardMcpRelaySnippet(connector.bridgeUrl)
-        : connector.loaderSnippet;
-    const copyCode = addClientTarget === 'mcp'
-        ? buildDashboardMcpRelayCopySnippet(connector.bridgeUrl)
-        : code;
-    const codeHtml = addClientTarget === 'mcp'
-        ? code.split('\n').map(line => {
-            const cls = line.startsWith('+') ? ' add-client-code-line--add' : '';
-            return '<span class="add-client-code-line' + cls + '">' + escapeHtml(line) + '</span>';
-        }).join('')
-        : escapeHtml(code);
-
-    return '<div class="add-client-result">' +
-        '<div class="add-client-code-wrap">' +
-        '<div class="add-client-code-head">' +
-        '<span class="add-client-code-label">' + escapeHtml(target.codeTitle) + '</span>' +
-        '<button class="add-client-btn add-client-btn--ghost" data-action="copy-connector">Copy</button>' +
-        '</div>' +
-        '<pre class="add-client-code" id="addClientConnectorCode" data-copy-text="' + escapeHtml(copyCode) + '">' + codeHtml + '</pre>' +
-        '</div>' +
-        '<p class="add-client-hint add-client-hint--inline">' + escapeHtml(target.action) + '</p>' +
-        '</div>';
-}
-
-function getAutoexecTargets() {
-    const status = clientSetupData?.autoexec || {};
-    return Array.isArray(status.detectedTargets) ? status.detectedTargets : [];
-}
-
-function ensureAutoexecSelection(targets) {
-    const ids = targets.map((target) => target.id).filter(Boolean);
-    if (addClientAutoexecSelected === null) {
-        addClientAutoexecSelected = new Set(ids);
-        return;
-    }
-    const valid = new Set(ids);
-    addClientAutoexecSelected = new Set([...addClientAutoexecSelected].filter((id) => valid.has(id)));
-    if (!addClientAutoexecSelected.size && ids.length) {
-        addClientAutoexecSelected = new Set(ids);
-    }
-}
-
-function allAutoexecSelected(targets) {
-    const ids = targets.map((target) => target.id).filter(Boolean);
-    return ids.length > 0 && ids.every((id) => addClientAutoexecSelected.has(id));
-}
-
-function someAutoexecSelected(targets) {
-    const ids = targets.map((target) => target.id).filter(Boolean);
-    return ids.some((id) => addClientAutoexecSelected.has(id)) && !allAutoexecSelected(targets);
-}
-
-function getSelectedAutoexecIds(targets) {
-    const valid = new Set(targets.map((target) => target.id).filter(Boolean));
-    return [...addClientAutoexecSelected].filter((id) => valid.has(id));
-}
-
-function syncAutoexecSelectAllUi() {
-    const selectAll = $('addClientAutoexecSelectAll');
-    if (!selectAll) return;
-    const targets = getAutoexecTargets();
-    selectAll.checked = allAutoexecSelected(targets);
-    selectAll.indeterminate = someAutoexecSelected(targets);
-}
-
-function renderAutoexecTargetRow(target) {
-    const path = target.scriptPath || target.folder || '';
-    const installed = target.installedPath || (target.installed ? target.scriptPath : '');
-    const id = target.id || '';
-    const checked = addClientAutoexecSelected.has(id);
-    return '<label class="add-client-autoexec-target' + (checked ? ' is-selected' : '') + '">' +
-        '<input class="add-client-autoexec-check" type="checkbox" data-autoexec-id="' + escapeHtml(id) + '"' + (checked ? ' checked' : '') + '>' +
-        '<div class="add-client-autoexec-target-main">' +
-        '<span class="add-client-autoexec-name">' + escapeHtml(target.name || 'Executor') + '</span>' +
-        (path ? '<span class="add-client-autoexec-path" title="' + escapeHtml(path) + '">' + escapeHtml(shortenHomePath(path)) + '</span>' : '') +
-        '</div>' +
-        (installed ? '<span class="add-client-autoexec-note">Existing script</span>' : '') +
-        '</label>';
-}
-
-function renderAutoexecSelectAll(targets) {
-    const all = allAutoexecSelected(targets);
-    return '<label class="add-client-autoexec-select-all">' +
-        '<input class="add-client-autoexec-check" type="checkbox" id="addClientAutoexecSelectAll"' + (all ? ' checked' : '') + '>' +
-        '<span>Select all</span>' +
-        '</label>';
-}
-
-function renderAutoexecInstallButton(connector, targets) {
-    const selectedCount = getSelectedAutoexecIds(targets).length;
-    const bridge = escapeHtml(connector.bridgeUrl);
-    let label = 'Install selected';
-    if (selectedCount === targets.length && targets.length > 1) label = 'Install to all executors';
-    else if (selectedCount === 1) label = 'Install to 1 executor';
-    else if (selectedCount > 1) label = 'Install to ' + selectedCount + ' executors';
-    return '<button class="add-client-btn add-client-btn--primary" data-action="write-autoexec" data-bridge="' + bridge + '"' +
-        (selectedCount ? '' : ' disabled') + '>' + escapeHtml(label) + '</button>';
-}
-
-function renderAutoexecSetup(connector) {
-    const targets = getAutoexecTargets();
-
-    if (!targets.length) {
-        return '<div class="add-client-autoexec">' +
-            '<div class="add-client-autoexec-head">' +
-            '<span class="add-client-autoexec-title">Auto-install</span>' +
-            '<span class="add-client-autoexec-desc">Install the connector into your executor autoexec folder.</span>' +
-            '</div>' +
-            '<p class="add-client-hint add-client-hint--warn">No supported autoexec folder was detected. Known macOS and Windows executor paths are checked automatically.</p>' +
-            '</div>';
-    }
-
-    ensureAutoexecSelection(targets);
-
-    return '<div class="add-client-autoexec">' +
-        '<div class="add-client-autoexec-head">' +
-        '<span class="add-client-autoexec-title">Auto-install</span>' +
-        '<span class="add-client-autoexec-desc">Choose executors, then install the connector to their autoexec folders.</span>' +
-        '</div>' +
-        '<div class="add-client-autoexec-list">' +
-        renderAutoexecSelectAll(targets) +
-        '<div class="add-client-autoexec-targets">' + targets.map(renderAutoexecTargetRow).join('') + '</div>' +
-        '</div>' +
-        '<div class="add-client-actions">' +
-        renderAutoexecInstallButton(connector, targets) +
-        '</div>' +
-        (addClientAutoexecOutput ? '<pre class="add-client-output">' + escapeHtml(addClientAutoexecOutput) + '</pre>' : '') +
-        '</div>';
-}
-
-function renderTailscaleCallout(otherMachine, canAuto, ts) {
-    if (!canAuto) {
-        return '<p class="add-client-callout add-client-callout--warn">Open this dashboard locally to run Tailscale setup.</p>';
-    }
-    if (!ts.installed) {
-        return '<p class="add-client-callout add-client-callout--warn">Install Tailscale here and on ' + escapeHtml(otherMachine) + '.</p>';
-    }
-    if (!ts.ip) {
-        return '<p class="add-client-callout add-client-callout--warn">Sign in to Tailscale on this host.</p>';
-    }
-    return '<p class="add-client-callout">Also install Tailscale on ' + escapeHtml(otherMachine) + '.</p>';
-}
-
-function renderAuthorizedMachines() {
-    const connector = getConnectorFor('authorizedMachines');
-    const ts = clientSetupData?.tailscale || {};
-    const canAuto = clientSetupData?.isLocalRequest !== false;
-    const otherMachine = addClientTarget === 'mcp' ? 'the other MCP host' : 'the Roblox device';
-    const targetVerb = addClientTarget === 'mcp' ? 'update the MCP config with the relay diff' : 'paste the Roblox connector';
-
-    addClientBody.innerHTML = '<div class="add-client-panel add-client-panel--compact">' +
-        '<div class="add-client-top-row">' + renderBackButton() + renderSkipBridgeButton() + '</div>' +
-        renderTargetSwitch() +
-        renderTailscaleCallout(otherMachine, canAuto, ts) +
-        (addClientAdminPrompt ? renderAdminPrompt() : '') +
-        '<div class="add-client-actions add-client-actions--compact">' +
-        '<button class="add-client-btn add-client-btn--primary" data-action="tailscale-auto"' + (canAuto ? '' : ' disabled') + '>Set up</button>' +
-        '<button class="add-client-btn" data-action="tailscale-refresh">Refresh</button>' +
-        '<button class="add-client-btn" data-action="toggle-guide">' + (addClientGuideOpen ? 'Hide guide' : 'Guide') + '</button>' +
-        '</div>' +
-        renderBridgeInput('authorizedMachines', ts.ip ? ts.ip + ':16384' : '', 'Tailscale address', true) +
-        (connector ? renderConnectorCode(connector) : '<p class="add-client-hint add-client-hint--warn">Connect Tailscale or enter an address above.</p>') +
-        (addClientOutput ? '<pre class="add-client-output">' + escapeHtml(addClientOutput) + '</pre>' : '') +
-        (addClientGuideOpen ? renderTailscaleGuide(otherMachine, targetVerb) : '') +
-        '</div>';
-}
-
-function renderAdminPrompt() {
-    return '<div class="add-client-callout add-client-callout--warn">' +
-        '<div>' + escapeHtml(addClientAdminPrompt.message) + '</div>' +
-        (addClientAdminPrompt.error ? '<div>' + escapeHtml(addClientAdminPrompt.error) + '</div>' : '') +
-        '<div class="add-client-actions add-client-actions--compact add-client-actions--nested">' +
-        '<button class="add-client-btn add-client-btn--primary" data-action="tailscale-admin">Continue</button>' +
-        '<button class="add-client-btn" data-action="toggle-guide">Guide</button>' +
-        '</div></div>';
-}
-
-function renderTailscaleGuide(otherMachine, targetVerb) {
-    const downloadUrl = clientSetupData?.guide?.downloadUrl || 'https://tailscale.com/download';
-    const cliUrl = clientSetupData?.guide?.cliUrl || 'https://tailscale.com/docs/reference/tailscale-cli';
-    const linuxCommand = clientSetupData?.guide?.linuxInstallCommand || 'curl -fsSL https://tailscale.com/install.sh | sh';
-    return '<ol class="add-client-guide">' +
-        '<li>Install Tailscale on this MCP host from <a href="' + escapeHtml(downloadUrl) + '" target="_blank" rel="noreferrer">tailscale.com/download</a>.</li>' +
-        '<li>Install Tailscale on ' + escapeHtml(otherMachine) + ' too.</li>' +
-        '<li>Sign in to the same Tailscale account on both machines.</li>' +
-        '<li>On Linux, the official install command is <code>' + escapeHtml(linuxCommand) + '</code>.</li>' +
-        '<li>Use <a href="' + escapeHtml(cliUrl) + '" target="_blank" rel="noreferrer">the Tailscale CLI</a> to check status if needed.</li>' +
-        '<li>Return here, refresh status, then ' + escapeHtml(targetVerb) + ' on the authorized machine.</li>' +
-        '</ol>';
-}
-
-async function runClientSetupAction(action, elevated = false) {
-    addClientOutput = elevated ? 'Waiting for administrator permission...' : 'Running setup...';
-    addClientAdminPrompt = null;
-    renderAuthorizedMachines();
-
-    try {
-        const res = await fetch('/api/client-setup', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ action, elevated }),
-        });
-        const data = await res.json();
-        if (!res.ok || (data.error && !data.needsAdmin && !data.needsManualInstall && !data.needsInstall)) {
-            throw new Error(data.error || 'Setup failed');
-        }
-
-        addClientOutput = [data.output, data.error].filter(Boolean).join('\n') || (data.ok ? 'Done.' : '');
-
-        if (data.needsAdmin) {
-            addClientAdminPrompt = {
-                action: data.adminAction || action,
-                message: data.adminMessage || 'Administrator permission is required.',
-                error: data.error || '',
-            };
-        } else if (data.needsManualInstall) {
-            addClientGuideOpen = true;
-            addClientOutput = data.error || 'Manual install is required on this machine.';
-        } else if (data.needsInstall) {
-            addClientOutput = data.error || 'Tailscale needs to be installed first.';
-            addClientGuideOpen = true;
-        }
-
-        await refreshClientSetupData();
-        renderAuthorizedMachines();
-    } catch(e) {
-        addClientOutput = e.message || 'Setup failed';
-        addClientGuideOpen = true;
-        renderAuthorizedMachines();
-    }
-}
-
-if (addClientBtn) addClientBtn.addEventListener('click', openAddClientModal);
-if (addClientCloseBtn) addClientCloseBtn.addEventListener('click', closeAddClientModal);
-if (addClientModal) {
-    addClientModal.addEventListener('click', (e) => {
-        if (e.target === addClientModal) closeAddClientModal();
-    });
-}
-if (addClientBody) {
-    addClientBody.addEventListener('click', async (e) => {
-        const btn = e.target.closest('[data-action]');
-        if (!btn) return;
-        const action = btn.dataset.action;
-
-        if (action === 'choose-target') {
-            addClientTarget = btn.dataset.target || 'roblox';
-            addClientMode = 'choices';
-            renderAddClientChoices();
-        } else if (action === 'change-target') {
-            addClientMode = 'intro';
-            addClientGuideOpen = false;
-            addClientAdminPrompt = null;
-            addClientOutput = '';
-            renderAddClientIntro();
-        } else if (action === 'set-target') {
-            addClientTarget = btn.dataset.target || 'roblox';
-            renderAddClient();
-        } else if (action === 'skip-bridge') {
-            addClientMode = 'directBridge';
-            addClientAdminPrompt = null;
-            addClientOutput = '';
-            renderDirectBridge();
-        } else if (action === 'choose-setup') {
-            addClientMode = btn.dataset.mode || 'choices';
-            addClientAdminPrompt = null;
-            addClientOutput = '';
-            addClientAutoexecOutput = '';
-            addClientAutoexecSelected = null;
-            renderAddClient();
-        } else if (action === 'setup-back') {
-            if (addClientMode === 'choices' || addClientMode === 'directBridge') {
-                addClientMode = 'intro';
-                addClientGuideOpen = false;
-            } else {
-                addClientMode = 'choices';
-            }
-            addClientAdminPrompt = null;
-            addClientOutput = '';
-            addClientAutoexecOutput = '';
-            addClientAutoexecSelected = null;
-            renderAddClient();
-        } else if (action === 'copy-connector') {
-            const codeEl = $('addClientConnectorCode');
-            const code = codeEl?.dataset.copyText || codeEl?.textContent || '';
-            if (code) copyText(code, addClientTarget === 'mcp' ? 'MCP config diff' : 'Connector script');
-        } else if (action === 'write-autoexec') {
-            const bridgeUrl = btn.dataset.bridge || 'localhost:16384';
-            const targets = getAutoexecTargets();
-            const selectedIds = getSelectedAutoexecIds(targets);
-            if (!selectedIds.length) {
-                showToast('Select at least one executor', 'error');
-                return;
-            }
-            addClientAutoexecOutput = 'Writing autoexec loader...';
-            renderAddClient();
-            try {
-                const res = await fetch('/api/client-setup', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        action: 'write-autoexec',
-                        bridgeUrl,
-                        autoexecTargetIds: selectedIds,
-                    }),
-                });
-                const data = await res.json();
-                if (!res.ok || !data.ok) throw new Error(data.error || 'Could not write autoexec loader');
-                addClientAutoexecOutput = 'Wrote:\n' + (data.written || []).map(item => {
-                    if (typeof item === 'string') return item;
-                    const previous = item.previousPath && item.previousPath !== item.scriptPath
-                        ? ' (existing connector detected at ' + item.previousPath + ')'
-                        : '';
-                    return item.scriptPath + previous;
-                }).join('\n');
-                await refreshClientSetupData();
-                showToast('Autoexec loader installed', 'success');
-            } catch (error) {
-                addClientAutoexecOutput = error.message || 'Could not write autoexec loader';
-                showToast('Autoexec install failed', 'error');
-            }
-            renderAddClient();
-        } else if (action === 'apply-bridge') {
-            const input = $('addClientBridgeInput');
-            if (input) {
-                if (input.dataset.mode === 'directBridge') {
-                    addClientDirectBridge = input.value.trim() || 'localhost:16384';
-                } else {
-                    addClientBridgeOverrides[input.dataset.mode] = input.value.trim();
-                }
-                renderAddClient();
-            }
-        } else if (action === 'tailscale-auto') {
-            await runClientSetupAction('tailscale-auto', false);
-        } else if (action === 'tailscale-admin') {
-            await runClientSetupAction(addClientAdminPrompt?.action || 'tailscale-auto', true);
-        } else if (action === 'tailscale-refresh') {
-            await refreshClientSetupData();
-            renderAuthorizedMachines();
-        } else if (action === 'toggle-guide') {
-            addClientGuideOpen = !addClientGuideOpen;
-            renderAuthorizedMachines();
-        }
-    });
-
-    addClientBody.addEventListener('change', (e) => {
-        const input = e.target;
-        if (!input?.classList?.contains('add-client-autoexec-check')) return;
-
-        const targets = getAutoexecTargets();
-        if (input.id === 'addClientAutoexecSelectAll') {
-            const ids = targets.map((target) => target.id).filter(Boolean);
-            addClientAutoexecSelected = new Set(input.checked ? ids : []);
-        } else {
-            const id = input.dataset.autoexecId;
-            if (!id) return;
-            if (input.checked) addClientAutoexecSelected.add(id);
-            else addClientAutoexecSelected.delete(id);
-        }
-        renderAddClient();
-    });
-}
+/* Add client setup lives in client-setup.js. */
+createClientSetup({ $, escapeHtml, showToast, dashboardApiFetch });
 
 /* ── Select client ───────────────────────────────────────── */
 function selectClient(clientId) {
@@ -1391,7 +754,7 @@ async function pollToolProgress(jobId, def) {
     $('toolResponseTime').textContent = '';
 
     while (true) {
-        const res = await fetch('/api/tool-progress?id=' + encodeURIComponent(jobId));
+        const res = await dashboardApiFetch('/api/tool-progress?id=' + encodeURIComponent(jobId));
         const job = await res.json();
         
         if (!res.ok || (job.error && !job.status)) {
@@ -1432,7 +795,7 @@ async function pollOverviewIndexProgress(jobId) {
     if (semanticIndexBtn) semanticIndexBtn.disabled = true;
 
     while (true) {
-        const res = await fetch('/api/tool-progress?id=' + encodeURIComponent(jobId));
+        const res = await dashboardApiFetch('/api/tool-progress?id=' + encodeURIComponent(jobId));
         const job = await res.json();
         if (!res.ok || job.error && !job.status) {
             throw new Error(job.error || 'Progress lookup failed');
@@ -1468,7 +831,7 @@ async function triggerSemanticIndex() {
     semanticIndexBtn.disabled = true;
 
     try {
-        const res = await fetch('/api/tool', {
+        const res = await dashboardApiFetch('/api/tool', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -1514,7 +877,7 @@ toolRunBtn.addEventListener('click', async () => {
 
     const startTime = performance.now();
     try {
-        const res = await fetch('/api/tool', {
+        const res = await dashboardApiFetch('/api/tool', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload),
@@ -1557,7 +920,7 @@ document.head.appendChild(spinStyle);
 let serverLogsLive = true;
 async function fetchServerLogs() {
     try {
-        const res = await fetch('/api/server-logs?limit=200');
+        const res = await dashboardApiFetch('/api/server-logs?limit=200');
         const data = await res.json();
         renderServerLogs(data.logs || []);
     } catch(e) {}
@@ -1590,7 +953,7 @@ function renderServerLogs(entries) {
     }
 }
 $('serverLogsClearBtn').addEventListener('click', async () => {
-    await fetch('/api/server-logs', { method: 'DELETE' });
+    await dashboardApiFetch('/api/server-logs', { method: 'DELETE' });
     renderServerLogs([]);
     showToast('Server logs cleared', 'info');
 });
@@ -1698,7 +1061,7 @@ async function exportScripts() {
     if (label) label.textContent = 'Exporting';
 
     try {
-        const res = await fetch(`/api/scripts/export?clientId=${encodeURIComponent(selectedClientId)}`);
+        const res = await dashboardApiFetch(`/api/scripts/export?clientId=${encodeURIComponent(selectedClientId)}`);
         if (!res.ok) {
             let message = 'Failed to export scripts';
             try {
@@ -1726,7 +1089,7 @@ if (scriptsExportBtn) scriptsExportBtn.addEventListener('click', exportScripts);
 async function fetchScripts() {
     if (!selectedClientId) return;
     try {
-        const res = await fetch(`/api/scripts?clientId=${selectedClientId}`);
+        const res = await dashboardApiFetch(`/api/scripts?clientId=${selectedClientId}`);
         const data = await res.json();
         const newScripts = Array.isArray(data) ? data : (data.scripts || []);
         
@@ -2145,7 +1508,7 @@ async function renderScriptsSearchResults() {
     list.innerHTML = '<div class="scripts-search-loading">Searching...</div>';
 
     try {
-        const res = await fetch(`/api/scripts/search?clientId=${encodeURIComponent(selectedClientId)}&q=${encodeURIComponent(query)}`);
+        const res = await dashboardApiFetch(`/api/scripts/search?clientId=${encodeURIComponent(selectedClientId)}&q=${encodeURIComponent(query)}`);
         const data = await res.json();
         if (requestId !== scriptsSearchRequestId || query !== scriptsSearchQuery.trim()) return;
 
@@ -2294,7 +1657,7 @@ async function openScriptSource(debugId, lineNumber = null) {
     if (list) scriptsScrollPos = list.scrollTop;
 
     try {
-        const res = await fetch(`/api/scripts/source?clientId=${selectedClientId}&debugId=${encodeURIComponent(debugId)}`);
+        const res = await dashboardApiFetch(`/api/scripts/source?clientId=${selectedClientId}&debugId=${encodeURIComponent(debugId)}`);
         const data = await res.json();
         if (data.error) { showToast(data.error, 'error'); return; }
 
@@ -2422,7 +1785,7 @@ scriptsCodeSaveBtn.addEventListener('click', async () => {
     scriptsCodeSaveBtn.disabled = true;
     scriptsCodeSaveBtn.textContent = 'Saving…';
     try {
-        const res = await fetch('/api/scripts/source', {
+        const res = await dashboardApiFetch('/api/scripts/source', {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -2645,7 +2008,13 @@ function renderServerGraph() {
         label: getInitials(clients[i].username || ''),
         userId: clients[i].userId
     }));
-    const colors = ['#a855f7','#f97316','#3b82f6','#22c55e','#ec4899'];
+    const colors = [
+        'var(--graph-edge-1)',
+        'var(--graph-edge-2)',
+        'var(--graph-edge-3)',
+        'var(--graph-edge-4)',
+        'var(--graph-edge-5)'
+    ];
     let s = '<svg viewBox="0 0 '+w+' '+h+'" xmlns="http://www.w3.org/2000/svg"><defs>';
     const allN = [...leftNodes.map((n,i)=>({...n,side:'l',i})), ...rightNodes.map((n,i)=>({...n,side:'r',i}))];
     allN.forEach((n,idx) => {
@@ -2662,7 +2031,7 @@ function renderServerGraph() {
         const c1x = n.side==='l' ? n.x+dx : cx+dx, c2x = n.side==='l' ? cx-dx : n.x-dx;
         const p = 'M'+n.x+','+n.y+' C'+c1x+','+n.y+' '+c2x+','+cy+' '+cx+','+cy;
         // Static base line
-        s += '<path d="'+p+'" fill="none" stroke="rgba(255,255,255,0.08)" stroke-width="1.5" pathLength="100"/>';
+        s += '<path d="'+p+'" fill="none" stroke="var(--graph-line)" stroke-opacity="0.58" stroke-width="1.5" pathLength="100"/>';
         // Animated beam using SMIL
         const fromOff = n.side==='l' ? '0' : '-100';
         const toOff = n.side==='l' ? '-100' : '0';
@@ -2672,18 +2041,18 @@ function renderServerGraph() {
         s += '<animate attributeName="stroke-dashoffset" from="'+fromOff+'" to="'+toOff+'" dur="2.5s" begin="'+delay+'s" repeatCount="indefinite"/>';
         s += '</path>';
     });
-    s += '<circle cx="'+cx+'" cy="'+cy+'" r="28" fill="#111" stroke="var(--border-light)" stroke-width="1.5"/>';
+    s += '<circle cx="'+cx+'" cy="'+cy+'" r="28" fill="var(--graph-node-bg)" stroke="var(--border-light)" stroke-width="1.5"/>';
     s += '<g transform="translate('+(cx-10)+','+(cy-10)+')">';
     s += '<path d="M8.4 1.4L0.6 5.4l8.4 4.2 8.4-4.2-8.4-4z" fill="none" stroke="var(--text)" stroke-width="1.5" stroke-linejoin="round"/>';
     s += '<path d="M0.6 10.2l8.4 4.2 8.4-4.2" fill="none" stroke="var(--text)" stroke-width="1.5" stroke-linejoin="round"/>';
     s += '<path d="M0.6 14.8l8.4 4.2 8.4-4.2" fill="none" stroke="var(--text)" stroke-width="1.5" stroke-linejoin="round"/>';
     s += '</g>';
     leftNodes.forEach(n => {
-        s += '<circle cx="'+n.x+'" cy="'+n.y+'" r="'+n.r+'" fill="#111" stroke="var(--border)" stroke-width="1"/>';
+        s += '<circle cx="'+n.x+'" cy="'+n.y+'" r="'+n.r+'" fill="var(--graph-node-bg)" stroke="var(--border-light)" stroke-width="1"/>';
         s += '<text x="'+n.x+'" y="'+(n.y+Math.max(3, n.fontSize/2.5))+'" text-anchor="middle" fill="var(--text-secondary)" font-size="'+n.fontSize+'" font-family="var(--mono)">'+escapeHtml(n.label)+'</text>';
     });
     rightNodes.forEach((n,i) => {
-        s += '<circle cx="'+n.x+'" cy="'+n.y+'" r="'+n.r+'" fill="#111" stroke="var(--border)" stroke-width="1"/>';
+        s += '<circle cx="'+n.x+'" cy="'+n.y+'" r="'+n.r+'" fill="var(--graph-node-bg)" stroke="var(--border-light)" stroke-width="1"/>';
         if (n.userId) {
             const avatarSize = Math.max(16, (n.r - 2) * 2);
             s += '<image href="/api/avatar?userId='+encodeURIComponent(String(n.userId))+'" x="'+(n.x-avatarSize/2)+'" y="'+(n.y-avatarSize/2)+'" width="'+avatarSize+'" height="'+avatarSize+'" clip-path="url(#ac'+i+')" preserveAspectRatio="xMidYMid slice"/>';
@@ -2760,7 +2129,7 @@ function updateSemanticSearchVisibility() {
 
 async function loadSemanticSettings() {
     try {
-        const res = await fetch('/api/semantic-settings');
+        const res = await dashboardApiFetch('/api/semantic-settings');
         const d = await res.json();
         semanticSearchEnabled = d.enabled !== false;
         settingsProvider = d.provider || 'openai';
@@ -2781,7 +2150,7 @@ function formatSettingsJson(value) {
 
 async function loadDecompilerSettings() {
     try {
-        const res = await fetch('/api/decompiler-settings');
+        const res = await dashboardApiFetch('/api/decompiler-settings');
         if (!res.ok) throw new Error('Failed to load decompiler settings');
         const data = await res.json();
         decompilerSettings = data;
@@ -2798,7 +2167,7 @@ async function refreshDecompilerHealth() {
 
     decompilerHealthRefreshInFlight = true;
     try {
-        const res = await fetch('/api/decompiler-settings', { cache: 'no-store' });
+        const res = await dashboardApiFetch('/api/decompiler-settings', { cache: 'no-store' });
         if (!res.ok) return;
         const data = await res.json();
         decompilerSettings.health = data.health || null;
@@ -2826,20 +2195,38 @@ async function refreshDecompilerHealth() {
 }
 
 function knownDecompilerIds() {
-    const ids = Object.keys(decompilerProviderUi);
+    const ids = Object.keys(decompilerProviderUi).filter(id => id !== 'custom');
     if (decompilerSettings && decompilerSettings.providers) {
-        for (const id of Object.keys(decompilerSettings.providers)) {
+        for (const [id, provider] of Object.entries(decompilerSettings.providers)) {
+            if (id === 'custom' && provider.enabled !== true && !provider.endpoint && !provider.options?.workflow) continue;
             if (!ids.includes(id)) ids.push(id);
         }
     }
     return ids;
 }
 
+function isCustomDecompilerProviderId(id) {
+    return id === 'custom' || (typeof id === 'string' && id.startsWith('custom:'));
+}
+
+function createCustomDecompilerProviderId() {
+    const suffix = typeof globalThis.crypto?.randomUUID === 'function'
+        ? globalThis.crypto.randomUUID()
+        : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+    return `custom:${suffix}`;
+}
+
 function providerUi(id) {
-    return decompilerProviderUi[id] || {
+    const base = isCustomDecompilerProviderId(id) ? decompilerProviderUi.custom : decompilerProviderUi[id] || {
         label: id,
         byline: 'custom',
         description: 'Custom decompiler provider.'
+    };
+    if (!isCustomDecompilerProviderId(id)) return base;
+    const name = decompilerSettings?.providers?.[id]?.options?.name;
+    return {
+        ...base,
+        label: typeof name === 'string' && name.trim() ? name.trim() : base.label
     };
 }
 
@@ -2913,8 +2300,10 @@ function normalizeDecompilerRuntime(value) {
         ? input.providerTimeoutsMs
         : {};
     const providerTimeoutsMs = {};
-    for (const id of Object.keys(defaults.providerTimeoutsMs)) {
-        providerTimeoutsMs[id] = Math.round(clampRuntimeNumber(inputTimeouts[id], defaults.providerTimeoutsMs[id], 500, 60000));
+    const timeoutIds = new Set([...Object.keys(defaults.providerTimeoutsMs), ...Object.keys(inputTimeouts)]);
+    for (const id of timeoutIds) {
+        const fallback = defaults.providerTimeoutsMs[id] ?? defaults.providerTimeoutsMs.custom ?? 10000;
+        providerTimeoutsMs[id] = Math.round(clampRuntimeNumber(inputTimeouts[id], fallback, 500, 60000));
     }
     return {
         adaptiveFallback: typeof input.adaptiveFallback === 'boolean' ? input.adaptiveFallback : defaults.adaptiveFallback,
@@ -3038,15 +2427,6 @@ function decompilerProviderIssueSummaries() {
     }).filter(Boolean);
 }
 
-function updateDecompilerSaveState() {
-    const button = $('saveDecompilerBtn');
-    if (!button || !decompilerSettings) return;
-    const issues = decompilerProviderIssueSummaries();
-    button.disabled = issues.length > 0;
-    button.setAttribute('aria-disabled', issues.length > 0 ? 'true' : 'false');
-    button.setAttribute('aria-label', issues.length > 0 ? `Fix provider issues before saving. ${issues[0]}` : 'Save decompiler settings');
-}
-
 function decompilerProviderByline(id, provider) {
     if (id === 'shiny') {
         return shinyMode(provider) === 'hosted' ? 'hosted' : 'local server';
@@ -3150,21 +2530,17 @@ function renderDecompilerSettings(options = {}) {
     if (options.animate) animateDecompilerRows(list, previousPositions);
     renderDecompilerAddMenu();
     renderDecompilerRuntimeSettings();
-    updateDecompilerSaveState();
 }
 
 function renderDecompilerAddMenu() {
     const menu = $('settingsAddDecompilerMenu');
     if (!menu || !decompilerSettings) return;
     const disabled = knownDecompilerIds().filter(id => !ensureDecompilerProvider(id).enabled);
-    if (!disabled.length) {
-        menu.innerHTML = '<div class="settings-add-provider-item settings-add-provider-item--empty"><span>All providers are already in the chain</span></div>';
-        return;
-    }
-    menu.innerHTML = disabled.map(id => {
+    const existing = disabled.map(id => {
         const ui = providerUi(id);
         return `<button class="settings-add-provider-item" type="button" data-add-provider="${escapeHtml(id)}"><strong>${escapeHtml(ui.label)}</strong><span>${escapeHtml(ui.byline)}</span></button>`;
     }).join('');
+    menu.innerHTML = `${existing}<button class="settings-add-provider-item settings-add-provider-item--custom" type="button" data-add-custom-provider><strong>Custom provider</strong><span>Create a new HTTP workflow</span></button>`;
 }
 
 function collectDecompilerSettings() {
@@ -3178,7 +2554,8 @@ function collectDecompilerSettings() {
             version: current.version == null ? null : Number(current.version),
             options: current.options && typeof current.options === 'object' && !Array.isArray(current.options) ? current.options : {}
         };
-        if (current.apiKey && !String(current.apiKey).startsWith('••')) provider.apiKey = current.apiKey;
+        if (current.apiKeyDirty === true) provider.apiKey = current.apiKey || '';
+        else if (current.apiKey && !String(current.apiKey).startsWith('••')) provider.apiKey = current.apiKey;
         providers[id] = provider;
     }
 
@@ -3216,28 +2593,73 @@ function updateProviderUI() {
     $('settingsOpenai').style.display = enabled && settingsProvider === 'openai' ? 'block' : 'none';
     $('settingsOllama').style.display = enabled && settingsProvider === 'ollama' ? 'block' : 'none';
 }
+const settingsAutoSaveTimers = new Map();
+const settingsSaveQueues = new Map();
+
+function settingsResourceForKey(key) {
+    return String(key).split('-', 1)[0];
+}
+
+function queueLatestSettingsSave(resource, task) {
+    let state = settingsSaveQueues.get(resource);
+    if (!state) {
+        state = { running: false, pending: [], completion: Promise.resolve() };
+        settingsSaveQueues.set(resource, state);
+    }
+    state.pending.push(task);
+    if (state.running) return state.completion;
+
+    state.running = true;
+    state.completion = (async () => {
+        try {
+            while (state.pending.length) {
+                const next = state.pending.shift();
+                await next();
+            }
+        } finally {
+            state.running = false;
+            if (!state.pending.length) settingsSaveQueues.delete(resource);
+        }
+    })();
+    return state.completion;
+}
+
+function scheduleSettingsAutoSave(key, task, delay = 500) {
+    window.clearTimeout(settingsAutoSaveTimers.get(key));
+    settingsAutoSaveTimers.set(key, window.setTimeout(() => {
+        settingsAutoSaveTimers.delete(key);
+        void queueLatestSettingsSave(settingsResourceForKey(key), task);
+    }, delay));
+}
+
 document.querySelectorAll('#providerToggle .settings-provider-btn').forEach(b => {
-    b.addEventListener('click', () => { settingsProvider = b.dataset.provider; updateProviderUI(); });
+    b.addEventListener('click', () => {
+        settingsProvider = b.dataset.provider;
+        updateProviderUI();
+        scheduleSettingsAutoSave('semantic-provider', () => saveSettings({ provider: settingsProvider }, { silent: true, reload: false }), 100);
+    });
 });
-async function saveSettings(body) {
+async function saveSettings(body, options = {}) {
     try {
-        const res = await fetch('/api/semantic-settings', { method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body) });
+        const res = await dashboardApiFetch('/api/semantic-settings', { method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body) });
         if (res.ok) {
-            await loadSettings();
-            showToast('Settings saved successfully', 'success');
+            if (options.reload !== false) await loadSettings();
+            if (!options.silent) showToast('Settings saved successfully', 'success');
+            return true;
         } else {
             showToast('Failed to save settings', 'error');
         }
     } catch(e) {
         showToast('Network error saving settings', 'error');
     }
+    return false;
 }
 
-async function saveDecompilerSettings() {
+async function saveDecompilerSettings(options = {}) {
     const issues = decompilerProviderIssueSummaries();
     if (issues.length) {
         renderDecompilerSettings();
-        showToast(`Fix provider issues before saving: ${issues[0]}`, 'error');
+        if (!options.silent) showToast(`Fix provider issues before saving: ${issues[0]}`, 'error');
         return false;
     }
 
@@ -3250,17 +2672,25 @@ async function saveDecompilerSettings() {
     }
 
     try {
-        const res = await fetch('/api/decompiler-settings', {
+        const res = await dashboardApiFetch('/api/decompiler-settings', {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(body)
         });
         if (res.ok) {
-            await loadDecompilerSettings();
-            showToast('Decompiler settings saved', 'success');
+            const data = await res.json();
+            if (options.applyResponse !== false) {
+                decompilerSettings = data;
+                normalizeDecompilerState();
+                renderDecompilerSettings();
+            }
+            if (!options.silent) showToast('Decompiler settings saved', 'success');
             return true;
         } else {
             const data = await res.json().catch(() => ({}));
+            if (customProviderEditor && decompilerModalProviderId && isCustomDecompilerProviderId(decompilerModalProviderId)) {
+                customProviderEditor.setServerError(data.error || 'Invalid custom provider workflow');
+            }
             showToast(data.error || 'Failed to save decompiler settings', 'error');
             return false;
         }
@@ -3268,6 +2698,10 @@ async function saveDecompilerSettings() {
         showToast('Network error saving decompiler settings', 'error');
         return false;
     }
+}
+
+function scheduleDecompilerAutoSave(delay = 300) {
+    scheduleSettingsAutoSave('decompiler', () => saveDecompilerSettings({ silent: true, applyResponse: false }), delay);
 }
 
 function activateDecompilerProvider(id) {
@@ -3283,6 +2717,7 @@ function activateDecompilerProvider(id) {
 function removeDecompilerProvider(id) {
     ensureDecompilerProvider(id).enabled = false;
     renderDecompilerSettings({ animate: true });
+    scheduleDecompilerAutoSave();
 }
 
 function moveDecompilerProvider(dragId, targetId, insertAfter, options = {}) {
@@ -3295,6 +2730,7 @@ function moveDecompilerProvider(dragId, targetId, insertAfter, options = {}) {
     if (arraysEqual(current, movable)) return false;
     setActiveDecompilerOrder(movable);
     renderDecompilerSettings({ animate: options.animate === true });
+    scheduleDecompilerAutoSave();
     return true;
 }
 
@@ -3408,6 +2844,7 @@ function finishDecompilerPointerDrag(e) {
         if (row.isConnected && row.parentElement !== list) row.remove();
         placeholder.remove();
         renderDecompilerSettings();
+        scheduleDecompilerAutoSave();
     }, 170);
 }
 
@@ -3484,6 +2921,13 @@ function clearDecompilerDragState() {
 }
 
 function closeDecompilerProviderModal() {
+    if (decompilerProviderAutoSaveTimer) {
+        window.clearTimeout(decompilerProviderAutoSaveTimer);
+        decompilerProviderAutoSaveTimer = null;
+        void saveDecompilerProviderModal({ silent: true });
+    }
+    customProviderEditor?.destroy();
+    customProviderEditor = null;
     $('decompilerProviderModal').classList.remove('open');
     decompilerModalProviderId = null;
 }
@@ -3499,23 +2943,39 @@ function openDecompilerRuntimeModal() {
     $('decompilerRuntimeModal').classList.add('open');
 }
 
-async function saveDecompilerRuntimeModal() {
-    const saved = await saveDecompilerSettings();
-    if (saved) closeDecompilerRuntimeModal();
-}
-
 function openDecompilerProviderModal(id, options = {}) {
     if (id === 'builtin') return;
     decompilerModalProviderId = id;
     const provider = ensureDecompilerProvider(id);
     const ui = providerUi(id);
+    $('decompilerProviderModal')?.querySelector('.decompiler-provider-modal')?.classList.toggle('decompiler-provider-modal--workflow', isCustomDecompilerProviderId(id));
     $('decompilerProviderModalTitle').textContent = id === 'oracle' ? 'Oracle settings' : `${ui.label} settings`;
     $('decompilerProviderModalDesc').textContent =
         id === 'oracle' ? 'Configure decompiler options.' : ui.description;
     $('decompilerProviderBody').innerHTML = id === 'oracle'
         ? oracleProviderModalHtml(provider)
-        : endpointProviderModalHtml(id, provider);
+        : isCustomDecompilerProviderId(id)
+            ? customProviderModalHtml(provider)
+            : endpointProviderModalHtml(id, provider);
     $('decompilerProviderModal').classList.add('open');
+    if (isCustomDecompilerProviderId(id)) {
+        customProviderEditor?.destroy();
+        customProviderEditor = new window.CustomProviderEditor($('customProviderEditorRoot'), {
+            name: provider.options?.name,
+            endpoint: provider.endpoint,
+            requestFormat: provider.options?.requestFormat,
+            requestField: provider.options?.requestField,
+            responseFormat: provider.options?.responseFormat,
+            responseField: provider.options?.responseField,
+            apiKey: provider.apiKey,
+            apiKeySet: provider.apiKeySet,
+            apiKeyHeader: provider.options?.apiKeyHeader,
+            apiKeyPrefix: provider.options?.apiKeyPrefix,
+            headers: provider.options?.headers,
+            workflow: provider.options?.workflow,
+            onChange: scheduleDecompilerProviderAutoSave,
+        });
+    }
     if (options.refreshSetup !== false) refreshDecompilerSetupStatus(id);
 }
 
@@ -3545,8 +3005,18 @@ function oracleProviderModalHtml(provider) {
         </div>
         <div class="decompiler-modal-note">The Oracle key is stored locally and sent to Roblox connectors that use this provider.</div>
         <div class="decompiler-modal-footer">
-            <button class="modal-btn modal-btn--cancel" type="button" data-action="close-provider-modal">Cancel</button>
-            <button class="modal-btn modal-btn--primary" type="button" data-action="save-provider-modal">Save</button>
+            <span class="decompiler-modal-note" data-provider-save-status>Saved automatically</span>
+            <button class="modal-btn modal-btn--cancel" type="button" data-action="close-provider-modal">Close</button>
+        </div>
+    `;
+}
+
+function customProviderModalHtml(provider) {
+    return `
+        <div id="customProviderEditorRoot"></div>
+        <div class="decompiler-modal-footer">
+            <span class="decompiler-modal-note" data-provider-save-status>Saved automatically</span>
+            <button class="modal-btn modal-btn--cancel" type="button" data-action="close-provider-modal">Close</button>
         </div>
     `;
 }
@@ -3564,6 +3034,34 @@ function decompilerSetupTitle(id, setupState) {
     if (setupState?.checking) return `Checking ${ui.label}`;
     if (setupState?.installed) return `${ui.label} installed`;
     return ui.setupLabel;
+}
+
+function decompilerSetupRegionHtml(id, provider) {
+    const setupState = decompilerSetupState[id] || null;
+    const setupDetails = setupState ? setupState.details : '';
+    if (!shouldShowDecompilerSetupPanel(id, provider)) {
+        return '<div class="decompiler-setup-region" hidden></div>';
+    }
+    return `
+        <div class="decompiler-setup-region">
+            <div class="decompiler-setup-panel ${decompilerSetupPanelClass(setupState)}">
+                <div>
+                    <div class="decompiler-setup-title">${escapeHtml(decompilerSetupTitle(id, setupState))}</div>
+                    <div class="decompiler-setup-desc">${escapeHtml(decompilerSetupDescription(id, setupState))}</div>
+                </div>
+                <button class="modal-btn modal-btn--cancel decompiler-setup-btn" type="button" data-action="setup-decompiler-provider" ${setupState?.running || setupState?.checking ? 'disabled' : ''}>
+                    ${escapeHtml(decompilerSetupButtonLabel(setupState))}
+                </button>
+            </div>
+            ${setupState && setupDetails ? `<pre class="decompiler-setup-output">${escapeHtml(setupDetails)}</pre>` : ''}
+        </div>
+    `;
+}
+
+function refreshActiveDecompilerSetupRegion(id) {
+    if (decompilerModalProviderId !== id) return;
+    const region = $('decompilerProviderBody')?.querySelector('.decompiler-setup-region');
+    if (region) region.outerHTML = decompilerSetupRegionHtml(id, ensureDecompilerProvider(id));
 }
 
 function decompilerSetupDescription(id, setupState) {
@@ -3607,20 +3105,6 @@ function endpointProviderModalHtml(id, provider) {
                 ? 'Uses the hosted Medal Server endpoint backed by Shiny.'
                 : 'Run Shiny on the MCP computer; Roblox reaches it through the bridge host.')
             : ui.description;
-    const setupState = decompilerSetupState[id] || null;
-    const setupDetails = setupState ? setupState.details : '';
-    const setupHtml = shouldShowDecompilerSetupPanel(id, provider) ? `
-        <div class="decompiler-setup-panel ${decompilerSetupPanelClass(setupState)}">
-            <div>
-                <div class="decompiler-setup-title">${escapeHtml(decompilerSetupTitle(id, setupState))}</div>
-                <div class="decompiler-setup-desc">${escapeHtml(decompilerSetupDescription(id, setupState))}</div>
-            </div>
-            <button class="modal-btn modal-btn--cancel decompiler-setup-btn" type="button" data-action="setup-decompiler-provider" ${setupState?.running || setupState?.checking ? 'disabled' : ''}>
-                ${escapeHtml(decompilerSetupButtonLabel(setupState))}
-            </button>
-        </div>
-        ${setupState && setupDetails ? `<pre class="decompiler-setup-output">${escapeHtml(setupDetails)}</pre>` : ''}
-    ` : '';
     const shinyModeHtml = id === 'shiny' ? `
         <div class="settings-field">
             <label>Mode</label>
@@ -3637,10 +3121,10 @@ function endpointProviderModalHtml(id, provider) {
             <input type="text" id="decompilerModalEndpoint" value="${escapeHtml(endpoint)}" placeholder="${escapeHtml(endpointDisplayForProvider(id, provider, id === 'shiny' ? shinyEndpointForMode(mode) : fissionLocalEndpoint()))}">
         </div>
         <div class="decompiler-modal-note">${escapeHtml(note)}</div>
-        ${setupHtml}
+        ${decompilerSetupRegionHtml(id, provider)}
         <div class="decompiler-modal-footer">
-            <button class="modal-btn modal-btn--cancel" type="button" data-action="close-provider-modal">Cancel</button>
-            <button class="modal-btn modal-btn--primary" type="button" data-action="save-provider-modal">Save</button>
+            <span class="decompiler-modal-note" data-provider-save-status>Saved automatically</span>
+            <button class="modal-btn modal-btn--cancel" type="button" data-action="close-provider-modal">Close</button>
         </div>
     `;
 }
@@ -3685,13 +3169,13 @@ async function refreshDecompilerSetupStatus(id) {
         running: false,
         error: false,
     };
-    if (decompilerModalProviderId === id) openDecompilerProviderModal(id, { refreshSetup: false });
+    refreshActiveDecompilerSetupRegion(id);
 
     try {
         const url = new URL('/api/decompiler-settings/setup', window.location.origin);
         url.searchParams.set('provider', id);
         if (endpoint) url.searchParams.set('endpoint', endpoint);
-        const res = await fetch(url);
+        const res = await dashboardApiFetch(url);
         const data = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(data.error || 'Failed to check setup status');
 
@@ -3715,7 +3199,7 @@ async function refreshDecompilerSetupStatus(id) {
         };
     }
 
-    if (decompilerModalProviderId === id) openDecompilerProviderModal(id, { refreshSetup: false });
+    refreshActiveDecompilerSetupRegion(id);
 }
 
 async function runDecompilerProviderSetup(id) {
@@ -3728,12 +3212,12 @@ async function runDecompilerProviderSetup(id) {
         error: false,
         details: ''
     };
-    openDecompilerProviderModal(id, { refreshSetup: false });
+    refreshActiveDecompilerSetupRegion(id);
 
     try {
         const provider = ensureDecompilerProvider(id);
         const endpoint = endpointToMcpHostValue($('decompilerModalEndpoint')?.value || provider.endpoint || '');
-        const res = await fetch('/api/decompiler-settings/setup', {
+        const res = await dashboardApiFetch('/api/decompiler-settings/setup', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ provider: id, endpoint })
@@ -3756,7 +3240,10 @@ async function runDecompilerProviderSetup(id) {
             if (id === 'shiny') setShinyMode(provider, 'local', true);
             provider.enabled = true;
             if (!activeDecompilerOrder().includes(id)) activateDecompilerProvider(id);
-            await saveDecompilerSettings();
+            await queueLatestSettingsSave(
+                'decompiler',
+                () => saveDecompilerSettings({ silent: true, applyResponse: false })
+            );
             showToast(`${providerUi(id).label} setup complete`, 'success');
         } else if (ok) {
             showToast(`${providerUi(id).label} setup complete`, 'success');
@@ -3774,19 +3261,35 @@ async function runDecompilerProviderSetup(id) {
         showToast(`Network error setting up ${providerUi(id).label}`, 'error');
     }
 
-    if (decompilerModalProviderId === id) openDecompilerProviderModal(id, { refreshSetup: false });
+    refreshActiveDecompilerSetupRegion(id);
 }
 
-async function saveDecompilerProviderModal() {
+function setDecompilerProviderSaveStatus(message, isError = false) {
+    const status = $('decompilerProviderBody')?.querySelector('[data-provider-save-status]');
+    if (!status) return;
+    status.textContent = message;
+    status.classList.toggle('is-error', isError);
+}
+
+function scheduleDecompilerProviderAutoSave(delay = 600) {
+    window.clearTimeout(decompilerProviderAutoSaveTimer);
+    decompilerProviderAutoSaveTimer = window.setTimeout(() => {
+        decompilerProviderAutoSaveTimer = null;
+        void saveDecompilerProviderModal({ silent: true });
+    }, delay);
+}
+
+async function saveDecompilerProviderModal(options = {}) {
     const id = decompilerModalProviderId;
     if (!id) return;
     const provider = ensureDecompilerProvider(id);
 
     if (id === 'oracle') {
         const key = ($('decompilerModalOracleKey')?.value || '').trim();
-        if (key && !key.startsWith('••')) {
+        if (!key.startsWith('••')) {
             provider.apiKey = key;
-            provider.apiKeySet = true;
+            provider.apiKeySet = Boolean(key);
+            provider.apiKeyDirty = true;
         }
         const version = ($('decompilerModalOracleVersion')?.value || '').trim();
         provider.version = version ? Number(version) : null;
@@ -3794,13 +3297,35 @@ async function saveDecompilerProviderModal() {
         try {
             provider.options = rawOptions ? JSON.parse(rawOptions) : {};
         } catch(e) {
-            showToast('Oracle options must be valid JSON', 'error');
-            return;
+            setDecompilerProviderSaveStatus('Not saved: options must be valid JSON.', true);
+            if (!options.silent) showToast('Oracle options must be valid JSON', 'error');
+            return false;
         }
         if (!provider.options || typeof provider.options !== 'object' || Array.isArray(provider.options)) {
-            showToast('Oracle options must be a JSON object', 'error');
-            return;
+            setDecompilerProviderSaveStatus('Not saved: options must be a JSON object.', true);
+            if (!options.silent) showToast('Oracle options must be a JSON object', 'error');
+            return false;
         }
+    } else if (isCustomDecompilerProviderId(id)) {
+        let custom;
+        try {
+            custom = customProviderEditor?.getValue();
+        } catch(e) {
+            if (!options.silent) showToast(e instanceof Error ? e.message : 'Invalid custom provider workflow', 'error');
+            return false;
+        }
+        if (!custom) return false;
+        const endpoint = endpointToMcpHostValue(custom.endpoint);
+        if (!custom.apiKey.startsWith('••')) {
+            provider.apiKey = custom.apiKey;
+            provider.apiKeySet = Boolean(custom.apiKey);
+            provider.apiKeyDirty = true;
+        }
+        provider.endpoint = endpoint;
+        provider.options = {
+            name: custom.name,
+            workflow: custom.workflow,
+        };
     } else {
         if (id === 'shiny') {
             const mode = $('decompilerProviderBody')?.querySelector('[data-action="set-shiny-mode"].settings-provider-btn--active')?.dataset.mode || shinyMode(provider);
@@ -3808,39 +3333,49 @@ async function saveDecompilerProviderModal() {
         }
         const endpoint = endpointToMcpHostValue($('decompilerModalEndpoint')?.value || '');
         if (!endpoint) {
-            showToast('Endpoint is required for this provider', 'error');
-            return;
+            setDecompilerProviderSaveStatus('Not saved: endpoint is required.', true);
+            if (!options.silent) showToast('Endpoint is required for this provider', 'error');
+            return false;
         }
         provider.endpoint = endpoint;
     }
 
     provider.enabled = true;
     if (!activeDecompilerOrder().includes(id)) activateDecompilerProvider(id);
-    const saved = await saveDecompilerSettings();
-    if (saved) closeDecompilerProviderModal();
+    const saved = await queueLatestSettingsSave('decompiler', () => saveDecompilerSettings({ silent: options.silent === true }));
+    if (saved) setDecompilerProviderSaveStatus('Saved automatically');
+    return saved;
 }
 
 $('settingsSemanticEnabled').addEventListener('change', () => {
     semanticSearchEnabled = $('settingsSemanticEnabled').checked;
     updateSemanticSearchVisibility();
+    scheduleSettingsAutoSave('semantic-enabled', () => saveSettings({ enabled: semanticSearchEnabled }, { silent: true, reload: false }), 100);
 });
-$('saveSemanticEnabledBtn').addEventListener('click', () => saveSettings({enabled:$('settingsSemanticEnabled').checked}));
-$('saveProviderBtn').addEventListener('click', () => saveSettings({provider:settingsProvider}));
-$('saveOpenaiBtn').addEventListener('click', () => {
+
+function openaiSettingsPayload() {
     const key = $('settingsOpenaiKey').value;
     const body = {
         openaiBaseUrl: $('settingsOpenaiUrl').value,
         openaiModel: $('settingsOpenaiModel').value
     };
-    if (key && !key.startsWith('••')) body.openaiApiKey = key;
-    saveSettings(body);
-});
-$('saveOllamaBtn').addEventListener('click', () => saveSettings({ollamaBaseUrl:$('settingsOllamaUrl').value,ollamaModel:$('settingsOllamaModel').value}));
-$('saveDecompilerBtn').addEventListener('click', () => saveDecompilerSettings());
+    if (!key.startsWith('••')) body.openaiApiKey = key;
+    return body;
+}
+
+for (const id of ['settingsOpenaiKey', 'settingsOpenaiUrl', 'settingsOpenaiModel']) {
+    $(id).addEventListener('input', () => {
+        scheduleSettingsAutoSave('semantic-openai', () => saveSettings(openaiSettingsPayload(), { silent: true, reload: false }), 600);
+    });
+}
+for (const id of ['settingsOllamaUrl', 'settingsOllamaModel']) {
+    $(id).addEventListener('input', () => {
+        scheduleSettingsAutoSave('semantic-ollama', () => saveSettings({ ollamaBaseUrl: $('settingsOllamaUrl').value, ollamaModel: $('settingsOllamaModel').value }, { silent: true, reload: false }), 600);
+    });
+}
 $('settingsDecompilerRuntimeBtn').addEventListener('click', openDecompilerRuntimeModal);
 $('decompilerRuntimeCloseBtn').addEventListener('click', closeDecompilerRuntimeModal);
 $('decompilerRuntimeCancelBtn').addEventListener('click', closeDecompilerRuntimeModal);
-$('decompilerRuntimeSaveBtn').addEventListener('click', saveDecompilerRuntimeModal);
 $('decompilerRuntimeModal').addEventListener('click', (e) => {
     if (e.target === $('decompilerRuntimeModal')) closeDecompilerRuntimeModal();
 });
@@ -3850,6 +3385,8 @@ $('decompilerRuntimeAdvancedToggle').addEventListener('click', () => {
 });
 $('decompilerRuntimeBody').addEventListener('input', (e) => {
     if (e.target?.matches?.('input[type="range"]')) updateRuntimeSliderValue(e.target);
+    decompilerSettings.runtime = collectDecompilerRuntimeSettings();
+    scheduleDecompilerAutoSave();
 });
 
 $('settingsAddDecompilerBtn').addEventListener('click', (e) => {
@@ -3859,13 +3396,22 @@ $('settingsAddDecompilerBtn').addEventListener('click', (e) => {
 });
 
 $('settingsAddDecompilerMenu').addEventListener('click', (e) => {
+    if (e.target.closest('[data-add-custom-provider]')) {
+        const id = createCustomDecompilerProviderId();
+        $('settingsAddDecompilerMenu').classList.remove('open');
+        activateDecompilerProvider(id);
+        openDecompilerProviderModal(id);
+        return;
+    }
     const item = e.target.closest('[data-add-provider]');
     if (!item) return;
     const id = item.dataset.addProvider;
     $('settingsAddDecompilerMenu').classList.remove('open');
     activateDecompilerProvider(id);
-    if (id === 'oracle' || id === 'fission' || id === 'shiny') {
+    if (id === 'oracle' || id === 'fission' || id === 'shiny' || isCustomDecompilerProviderId(id)) {
         openDecompilerProviderModal(id);
+    } else {
+        scheduleDecompilerAutoSave();
     }
 });
 
@@ -3893,7 +3439,10 @@ $('decompilerProviderBody').addEventListener('click', (e) => {
         closeDecompilerProviderModal();
     } else if (action === 'toggle-provider-advanced') {
         decompilerAdvancedOpen = !decompilerAdvancedOpen;
-        if (decompilerModalProviderId) openDecompilerProviderModal(decompilerModalProviderId);
+        const advanced = $('decompilerAdvancedFields');
+        if (advanced) advanced.hidden = !decompilerAdvancedOpen;
+        const indicator = e.target.closest('[data-action="toggle-provider-advanced"]')?.querySelector('span');
+        if (indicator) indicator.textContent = decompilerAdvancedOpen ? '^' : 'v';
     } else if (action === 'setup-decompiler-provider') {
         if (decompilerModalProviderId) runDecompilerProviderSetup(decompilerModalProviderId);
     } else if (action === 'set-shiny-mode') {
@@ -3901,11 +3450,15 @@ $('decompilerProviderBody').addEventListener('click', (e) => {
         const provider = ensureDecompilerProvider('shiny');
         setShinyMode(provider, mode);
         openDecompilerProviderModal('shiny');
-    } else if (action === 'save-provider-modal') {
-        saveDecompilerProviderModal();
+        scheduleDecompilerProviderAutoSave(100);
     }
 });
-
+$('decompilerProviderBody').addEventListener('input', (e) => {
+    if (!e.target.closest('#customProviderEditorRoot')) scheduleDecompilerProviderAutoSave();
+});
+$('decompilerProviderBody').addEventListener('change', (e) => {
+    if (!e.target.closest('#customProviderEditorRoot')) scheduleDecompilerProviderAutoSave(150);
+});
 document.addEventListener('click', (e) => {
     if (!$('settingsAddDecompilerMenu').contains(e.target) && !$('settingsAddDecompilerBtn').contains(e.target)) {
         $('settingsAddDecompilerMenu').classList.remove('open');
@@ -3948,7 +3501,7 @@ async function deleteEmbeddingCache() {
     if (!confirmed) return;
 
     try {
-        const res = await fetch('/api/semantic-settings', { method:'DELETE' });
+        const res = await dashboardApiFetch('/api/semantic-settings', { method:'DELETE' });
         if (res.ok) {
             showToast('Embedding cache cleared', 'success');
         } else {
@@ -3959,7 +3512,9 @@ async function deleteEmbeddingCache() {
         showToast('Network error clearing cache', 'error');
     }
 }
-$('saveEmbeddingCacheBtn').addEventListener('click', () => saveSettings({saveEmbeddingsToDisk:$('settingsSaveEmbeddings').checked}));
+$('settingsSaveEmbeddings').addEventListener('change', () => {
+    scheduleSettingsAutoSave('semantic-cache', () => saveSettings({ saveEmbeddingsToDisk: $('settingsSaveEmbeddings').checked }, { silent: true, reload: false }), 100);
+});
 $('deleteEmbeddingCacheBtn').addEventListener('click', () => deleteEmbeddingCache());
 $('settingsTestBtn').addEventListener('click', async () => {
     const r = $('settingsTestResult'); r.innerHTML = 'Testing…'; r.className = '';
@@ -3973,8 +3528,8 @@ $('settingsTestBtn').addEventListener('click', async () => {
             ollamaModel: $('settingsOllamaModel').value
         };
         const key = $('settingsOpenaiKey').value;
-        if (key && !key.startsWith('••')) body.openaiApiKey = key;
-        const res = await fetch('/api/semantic-settings/test', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+        if (!key.startsWith('••')) body.openaiApiKey = key;
+        const res = await dashboardApiFetch('/api/semantic-settings/test', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
         const d = await res.json();
         r.textContent = d.ok ? `✓ Success (${d.dimensions||'?'}d, ${d.latencyMs||'?'}ms)` : '✗ ' + (d.error||'Failed');
         r.className = 'settings-test-result ' + (d.ok ? 'settings-test-result--ok' : 'settings-test-result--err');
@@ -3985,7 +3540,7 @@ $('settingsTestBtn').addEventListener('click', async () => {
 /* ── Polling ─────────────────────────────────────────────── */
 async function updateStatus() {
     try {
-        const res = await fetch('/api/status');
+        const res = await dashboardApiFetch('/api/status');
         const data = await res.json();
         clients = data.clients || [];
         currentRelays = data.relayClients || 0;
@@ -4026,6 +3581,7 @@ setInterval(() => {
 }, 5000);
 setInterval(refreshDecompilerHealth, 2000);
 
+themeSettings.initialize();
 loadSemanticSettings();
 updateStatus();
 setSidebarMode('home');

@@ -2,6 +2,8 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import type { IncomingMessage, ServerResponse } from "http";
 import os from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   DEFAULT_BRIDGE_URL,
   SERVER_PORT,
@@ -15,6 +17,11 @@ import {
 import { readJsonBody } from "../../body.js";
 
 const COMMAND_TIMEOUT_MS = 30000;
+const HARNESS_INSTALL_TIMEOUT_MS = 10 * 60 * 1000;
+const HARNESS_INSTALLER_PATH = fileURLToPath(
+  new URL("../../../../scripts/install-harnesses.mjs", import.meta.url)
+);
+const REPO_ROOT = path.dirname(path.dirname(HARNESS_INSTALLER_PATH));
 const LINUX_INSTALL_COMMAND = "curl -fsSL https://tailscale.com/install.sh | sh";
 const TAILSCALE_DOWNLOAD_URL = "https://tailscale.com/download";
 const TAILSCALE_CLI_URL = "https://tailscale.com/docs/reference/tailscale-cli";
@@ -24,6 +31,32 @@ interface CommandResult {
   code: number | null;
   stdout: string;
   stderr: string;
+}
+
+interface HarnessTarget {
+  id: string;
+  name: string;
+  group: string;
+  detected: boolean;
+  reason: string;
+}
+
+interface HarnessResult {
+  id: string;
+  name: string;
+  ok: boolean;
+  error: string | null;
+}
+
+interface HarnessInstallResult {
+  ok: boolean;
+  busy?: boolean;
+  installed?: string[];
+  failed?: Array<{ name: string; error: string }>;
+  restartRequired?: boolean;
+  restartMessage?: string | null;
+  output?: string;
+  error?: string | null;
 }
 
 interface InstallPlan {
@@ -71,12 +104,69 @@ function isLocalRequest(req: IncomingMessage): boolean {
   );
 }
 
-function runCommand(file: string, args: string[], timeoutMs = COMMAND_TIMEOUT_MS): Promise<CommandResult> {
+function runCommand(
+  file: string,
+  args: string[],
+  timeoutMs = COMMAND_TIMEOUT_MS,
+  cwd?: string,
+  killProcessTree = false
+): Promise<CommandResult> {
   return new Promise((resolve) => {
-    const child = spawn(file, args, { windowsHide: true });
+    const child = spawn(file, args, {
+      windowsHide: true,
+      cwd,
+      detached: killProcessTree && process.platform !== "win32",
+    });
     let stdout = "";
     let stderr = "";
     let settled = false;
+    let timedOut = false;
+    let terminationPromise: Promise<void> | null = null;
+
+    const wait = (ms: number) => new Promise((done) => setTimeout(done, ms));
+
+    const unixProcessGroupExists = () => {
+      if (!child.pid || process.platform === "win32") return false;
+      try {
+        process.kill(-child.pid, 0);
+        return true;
+      } catch (error) {
+        return (error as NodeJS.ErrnoException).code !== "ESRCH";
+      }
+    };
+
+    const signalChild = (force: boolean): Promise<void> => {
+      if (process.platform === "win32" && child.pid && killProcessTree) {
+        return new Promise((done) => {
+          const killer = spawn("taskkill.exe", ["/pid", String(child.pid), "/t", ...(force ? ["/f"] : [])], {
+            windowsHide: true,
+            stdio: "ignore",
+          });
+          killer.once("error", () => done());
+          killer.once("close", () => done());
+        });
+      }
+      const signal = force ? "SIGKILL" : "SIGTERM";
+      try {
+        if (killProcessTree && child.pid) process.kill(-child.pid, signal);
+        else child.kill(signal);
+      } catch {
+        // The process already exited between the timeout and signal.
+      }
+      return Promise.resolve();
+    };
+
+    const terminateProcessTree = async () => {
+      await signalChild(false);
+      await wait(5000);
+      if (process.platform === "win32") {
+        await signalChild(true);
+        return;
+      }
+      if (!killProcessTree || !unixProcessGroupExists()) return;
+      await signalChild(true);
+      while (unixProcessGroupExists()) await wait(50);
+    };
 
     const finish = (result: CommandResult) => {
       if (settled) return;
@@ -90,13 +180,8 @@ function runCommand(file: string, args: string[], timeoutMs = COMMAND_TIMEOUT_MS
     };
 
     const timer = setTimeout(() => {
-      child.kill("SIGTERM");
-      finish({
-        ok: false,
-        code: null,
-        stdout,
-        stderr: stderr || `Command timed out after ${timeoutMs}ms.`,
-      });
+      timedOut = true;
+      terminationPromise = terminateProcessTree();
     }, timeoutMs);
 
     child.stdout?.on("data", (chunk) => {
@@ -109,9 +194,143 @@ function runCommand(file: string, args: string[], timeoutMs = COMMAND_TIMEOUT_MS
       finish({ ok: false, code: null, stdout, stderr: error.message });
     });
     child.on("close", (code) => {
-      finish({ ok: code === 0, code, stdout, stderr });
+      void (async () => {
+        if (terminationPromise) await terminationPromise;
+        finish({
+          ok: !timedOut && code === 0,
+          code,
+          stdout,
+          stderr: timedOut ? stderr || `Command timed out after ${timeoutMs}ms.` : stderr,
+        });
+      })();
     });
   });
+}
+
+let harnessInstallPromise: Promise<HarnessInstallResult> | null = null;
+let harnessTargetsCache: { expiresAt: number; targets: HarnessTarget[] } | null = null;
+
+async function getHarnessTargets(force = false): Promise<HarnessTarget[]> {
+  if (!force && harnessTargetsCache && harnessTargetsCache.expiresAt > Date.now()) {
+    return harnessTargetsCache.targets;
+  }
+
+  const result = await runCommand(
+    process.execPath,
+    [HARNESS_INSTALLER_PATH, "--list-harnesses-json", "--plain"],
+    15000,
+    REPO_ROOT
+  );
+  if (!result.ok) {
+    throw new Error(result.stderr || result.stdout || "Could not detect installed harnesses.");
+  }
+
+  const parsed = JSON.parse(result.stdout) as unknown;
+  if (!Array.isArray(parsed)) throw new Error("Harness installer returned an invalid target list.");
+  const targets = parsed.filter((item): item is HarnessTarget => {
+    if (!item || typeof item !== "object") return false;
+    const candidate = item as Record<string, unknown>;
+    return (
+      typeof candidate.id === "string" &&
+      typeof candidate.name === "string" &&
+      typeof candidate.group === "string" &&
+      typeof candidate.detected === "boolean" &&
+      typeof candidate.reason === "string"
+    );
+  });
+  harnessTargetsCache = { expiresAt: Date.now() + 5000, targets };
+  return targets;
+}
+
+function parseHarnessResults(output: string, targets: Map<string, HarnessTarget>): HarnessResult[] {
+  const results = new Map<string, HarnessResult>();
+  for (const marker of output.split(/\r?\n/).filter((line) => line.startsWith("HARNESS_RESULT_JSON="))) {
+    try {
+      const parsed = JSON.parse(marker.slice("HARNESS_RESULT_JSON=".length)) as {
+        harness?: unknown;
+        harnesses?: unknown;
+      };
+      const items = parsed.harness ? [parsed.harness] : Array.isArray(parsed.harnesses) ? parsed.harnesses : [];
+      for (const item of items) {
+      if (!item || typeof item !== "object") continue;
+      const value = item as Record<string, unknown>;
+      const target = typeof value.id === "string" ? targets.get(value.id) : null;
+      if (!target || typeof value.ok !== "boolean") continue;
+      results.set(target.id, {
+        id: target.id,
+        name: target.name,
+        ok: value.ok,
+        error: typeof value.error === "string" ? value.error : null,
+      });
+      }
+    } catch {
+      // Ignore malformed progress lines; the caller supplies a failure fallback.
+    }
+  }
+  return [...results.values()];
+}
+
+async function performHarnessInstall(harnessIds: string[]): Promise<HarnessInstallResult> {
+  const targets = await getHarnessTargets(true);
+  const detectedById = new Map(targets.filter((target) => target.detected).map((target) => [target.id, target]));
+  const uniqueIds = [...new Set(harnessIds.map((id) => String(id).trim()).filter(Boolean))];
+  if (!uniqueIds.length) return { ok: false, error: "Select at least one detected harness." };
+
+  const unsupportedIds = uniqueIds.filter((id) => !detectedById.has(id));
+  if (unsupportedIds.length) {
+    return { ok: false, error: `Harness not detected: ${unsupportedIds.join(", ")}` };
+  }
+
+  const result = await runCommand(
+    process.execPath,
+    [
+      HARNESS_INSTALLER_PATH,
+      "--harnesses",
+      uniqueIds.join(","),
+      "--yes",
+      "--plain",
+      "--install-only",
+      "--json-result",
+    ],
+    HARNESS_INSTALL_TIMEOUT_MS,
+    REPO_ROOT,
+    true
+  );
+  const reported = parseHarnessResults(result.stdout, detectedById);
+  const reportedById = new Map(reported.map((item) => [item.id, item]));
+  const harnessResults = uniqueIds.map((id) => reportedById.get(id) ?? ({
+        id,
+        name: detectedById.get(id)!.name,
+        ok: result.ok,
+        error: result.ok ? null : result.stderr || "Harness install failed.",
+      }));
+  const succeeded = harnessResults.filter((item) => item.ok);
+  const failed = harnessResults.filter((item) => !item.ok);
+  const restartMessage = succeeded.length
+    ? `Restart ${succeeded.map((item) => item.name).join(", ")} to load the MCP server.`
+    : null;
+  return {
+    ok: failed.length === 0,
+    installed: succeeded.map((item) => item.name),
+    failed: failed.map((item) => ({ name: item.name, error: item.error || "Configuration failed." })),
+    restartRequired: succeeded.length > 0,
+    restartMessage,
+    output: result.stdout,
+    error: failed.length ? failed.map((item) => `${item.name}: ${item.error || "Configuration failed."}`).join("\n") : null,
+  };
+}
+
+async function installHarnesses(harnessIds: string[]): Promise<HarnessInstallResult> {
+  if (harnessInstallPromise) {
+    return { ok: false, busy: true, error: "A harness install is already running." };
+  }
+  const operation = performHarnessInstall(harnessIds);
+  harnessInstallPromise = operation;
+  try {
+    return await operation;
+  } finally {
+    if (harnessInstallPromise === operation) harnessInstallPromise = null;
+  }
 }
 
 function shellQuote(value: string): string {
@@ -275,6 +494,13 @@ async function setupPayload(req: IncomingMessage): Promise<Record<string, unknow
   const lanIp = getLocalLanIp();
   const tailscale = await getTailscaleStatus();
   const tailscaleIp = typeof tailscale.ip === "string" ? tailscale.ip : null;
+  let harnesses: HarnessTarget[] = [];
+  let harnessError: string | null = null;
+  try {
+    harnesses = (await getHarnessTargets()).filter((target) => target.detected);
+  } catch (error) {
+    harnessError = error instanceof Error ? error.message : String(error);
+  }
 
   return {
     serverPort: SERVER_PORT,
@@ -293,6 +519,8 @@ async function setupPayload(req: IncomingMessage): Promise<Record<string, unknow
     },
     autoexec: getAutoexecStatus(),
     tailscale,
+    harnesses,
+    harnessError,
   };
 }
 
@@ -366,7 +594,13 @@ export async function POST(req: IncomingMessage, res: ServerResponse): Promise<v
     return;
   }
 
-  let body: { action?: string; elevated?: boolean; bridgeUrl?: string; autoexecTargetIds?: string[] };
+  let body: {
+    action?: string;
+    elevated?: boolean;
+    bridgeUrl?: string;
+    autoexecTargetIds?: string[];
+    harnessIds?: string[];
+  };
   try {
     body = await readJsonBody(req);
   } catch {
@@ -412,6 +646,13 @@ export async function POST(req: IncomingMessage, res: ServerResponse): Promise<v
       ...result,
       autoexec: getAutoexecStatus(),
     });
+    return;
+  }
+
+  if (body.action === "install-harnesses") {
+    const result = await installHarnesses(Array.isArray(body.harnessIds) ? body.harnessIds : []);
+    const status = result.ok ? 200 : result.busy ? 409 : result.restartRequired ? 207 : 400;
+    json(res, status, result);
     return;
   }
 

@@ -19,7 +19,10 @@ fs.cpSync(src, dest, { recursive: true });
 console.log(`[copy-assets] ${src} → ${dest}`);
 
 if (fs.existsSync(sharedSrc)) {
-  fs.rmSync(sharedDest, { recursive: true, force: true });
-  fs.cpSync(sharedSrc, sharedDest, { recursive: true });
-  console.log(`[copy-assets] ${sharedSrc} → ${sharedDest}`);
+  fs.mkdirSync(sharedDest, { recursive: true });
+  for (const entry of fs.readdirSync(sharedSrc)) {
+    if (!entry.endsWith(".mjs") && !entry.endsWith(".d.mts")) continue;
+    fs.copyFileSync(path.join(sharedSrc, entry), path.join(sharedDest, entry));
+  }
+  console.log(`[copy-assets] runtime modules from ${sharedSrc} → ${sharedDest}`);
 }

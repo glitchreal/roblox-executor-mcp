@@ -16,6 +16,7 @@ import {
   shouldSkipDecompilerProvider,
 } from "../dist/decompiler/health.js";
 import { decompileBytecode, resolveDecompilerProviders } from "../dist/decompiler/run.js";
+import { compileCustomDecompilerWorkflow } from "../dist/decompiler/custom-workflow.js";
 import {
   cleanupInactiveHttpClients,
   getClientById,
@@ -25,6 +26,7 @@ import {
 import {
   DEFAULT_DECOMPILER_SETTINGS,
   DEFAULT_DECOMPILER_RUNTIME_SETTINGS,
+  normalizeDecompilerSettingsInput,
 } from "../dist/decompiler/settings.js";
 import {
   semanticIndexReadyMessage,
@@ -352,6 +354,233 @@ test("a built-in handshake is reported as an attempted provider", async () => {
   });
   assert.equal(result.needsBuiltin, true);
   assert.deepEqual(result.attemptedProviders, ["builtin"]);
+});
+
+test("a custom decompiler provider can send JSON and read a nested JSON response", async (t) => {
+  let receivedBody = "";
+  let receivedAuthorization = "";
+  let receivedUrl = "";
+  t.mock.method(globalThis, "fetch", async (url, init) => {
+    receivedUrl = String(url);
+    receivedBody = String(init?.body || "");
+    receivedAuthorization = new Headers(init?.headers).get("Authorization") || "";
+    return new Response(JSON.stringify({ data: { source: "return 42" } }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  });
+  const settings = structuredClone(DEFAULT_DECOMPILER_SETTINGS);
+  for (const provider of Object.values(settings.providers)) provider.enabled = false;
+  settings.providers.custom = {
+    enabled: true,
+    endpoint: "https://legacy.example/decompile",
+    apiKey: "secret",
+    version: null,
+    options: {
+      name: "Local custom",
+      requestFormat: "plain-bytecode",
+      requestField: "ignored",
+      responseFormat: "text",
+      responseField: "ignored",
+      apiKeyHeader: "Authorization",
+      apiKeyPrefix: "Bearer",
+      headers: { "X-Test": "custom" },
+      workflow: {
+        version: 1,
+        nodes: [
+          { id: "bytecode", type: "bytecode", config: {} },
+          { id: "base64", type: "base64", config: {} },
+          { id: "variable", type: "set-variable", config: { name: "bytecode" } },
+          {
+            id: "request",
+            type: "request",
+            config: {
+              endpoint: "https://custom.example/decompile",
+              headersTemplate: JSON.stringify({
+                "X-Test": "custom",
+                Authorization: "Bearer {{api_key}}",
+              }),
+              bodyTemplate: JSON.stringify({ bytecode: "{{bytecode}}" }),
+            },
+          },
+          { id: "parse", type: "parse-json", config: { path: "data.source" } },
+          { id: "source", type: "source", config: {} },
+        ],
+        edges: [
+          { source: "bytecode", target: "base64" },
+          { source: "base64", target: "variable" },
+          { source: "variable", target: "request" },
+          { source: "request", target: "parse" },
+          { source: "parse", target: "source" },
+        ],
+      },
+    },
+  };
+  settings.providerOrder = ["custom"];
+
+  const bytecodeBase64 = Buffer.from("bytecode").toString("base64");
+  const result = await decompileBytecode(settings, {
+    bytecodeBase64,
+    clientId: "custom-provider-test",
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.providerId, "custom");
+  assert.equal(result.source, "-- Decompiled with Local custom\nreturn 42");
+  assert.equal(receivedUrl, "https://custom.example/decompile");
+  assert.deepEqual(JSON.parse(receivedBody), { bytecode: bytecodeBase64 });
+  assert.equal(receivedAuthorization, "Bearer secret");
+});
+
+test("custom request templates reject unknown variables", () => {
+  assert.throws(
+    () => compileCustomDecompilerWorkflow({
+      nodes: [
+        { id: "bytecode", type: "bytecode" },
+        { id: "variable", type: "set-variable", config: { name: "input" } },
+        {
+          id: "request",
+          type: "request",
+          config: {
+            endpoint: "https://example.com/decompile",
+            headersTemplate: "{}",
+            bodyTemplate: "{{missing}}",
+          },
+        },
+        { id: "source", type: "source" },
+      ],
+      edges: [
+        { source: "bytecode", target: "variable" },
+        { source: "variable", target: "request" },
+        { source: "request", target: "source" },
+      ],
+    }),
+    /unknown variable "missing"/
+  );
+});
+
+test("custom workflow endpoints add a protocol and preserve the BridgeHost token", () => {
+  const compileEndpoint = endpoint => compileCustomDecompilerWorkflow({
+    nodes: [
+      { id: "bytecode", type: "bytecode" },
+      { id: "request", type: "request", config: { endpoint } },
+      { id: "source", type: "source" },
+    ],
+    edges: [
+      { source: "bytecode", target: "request" },
+      { source: "request", target: "source" },
+    ],
+  }).endpoint;
+
+  assert.equal(compileEndpoint("example.com/decompile"), "http://example.com/decompile");
+  assert.equal(
+    compileEndpoint("http://{{BridgeHost}}:3001/decompile"),
+    "http://{{BridgeHost}}:3001/decompile"
+  );
+});
+
+test("custom decompiler workflows reject disconnected blocks", () => {
+  assert.throws(
+    () => compileCustomDecompilerWorkflow({
+      nodes: [
+        { id: "bytecode", type: "bytecode" },
+        { id: "request", type: "request", config: { endpoint: "https://example.com" } },
+        { id: "source", type: "source" },
+        { id: "orphan", type: "base64" },
+      ],
+      edges: [
+        { source: "bytecode", target: "request" },
+        { source: "request", target: "source" },
+      ],
+    }),
+    /Every block must be connected/
+  );
+});
+
+test("multiple custom decompiler providers survive settings normalization independently", () => {
+  const settings = normalizeDecompilerSettingsInput({
+    providerOrder: ["builtin", "custom:first", "custom:second"],
+    providers: {
+      "custom:first": {
+        enabled: true,
+        endpoint: "https://first.example/decompile",
+        options: { name: "First" },
+      },
+      "custom:second": {
+        enabled: false,
+        endpoint: "https://second.example/decompile",
+        options: { name: "Second" },
+      },
+    },
+  });
+
+  assert.equal(settings.providers["custom:first"].endpoint, "https://first.example/decompile");
+  assert.equal(settings.providers["custom:first"].options.name, "First");
+  assert.equal(settings.providers["custom:second"].endpoint, "https://second.example/decompile");
+  assert.equal(settings.providers["custom:second"].options.name, "Second");
+  assert.deepEqual(
+    settings.providerOrder.filter((id) => id.startsWith("custom:")),
+    ["custom:first", "custom:second"]
+  );
+  assert.equal(settings.runtime.providerTimeoutsMs["custom:first"], 10000);
+  assert.equal(settings.runtime.providerTimeoutsMs["custom:second"], 10000);
+});
+
+test("an explicit empty provider API key clears the stored fallback", () => {
+  const fallback = structuredClone(DEFAULT_DECOMPILER_SETTINGS);
+  fallback.providers.oracle.apiKey = "stored-secret";
+  fallback.providers.oracle.enabled = false;
+
+  const settings = normalizeDecompilerSettingsInput({
+    providers: {
+      oracle: { apiKey: "" },
+    },
+  }, fallback);
+
+  assert.equal(settings.providers.oracle.apiKey, "");
+});
+
+test("multiple custom decompiler providers fall through in their configured order", async (t) => {
+  const calls = [];
+  t.mock.method(globalThis, "fetch", async (url) => {
+    calls.push(String(url));
+    if (calls.length === 1) return new Response("first failed", { status: 500 });
+    return new Response("return 'second'", { status: 200 });
+  });
+  const settings = normalizeDecompilerSettingsInput({
+    providerOrder: ["custom:fallback-first", "custom:fallback-second"],
+    providers: {
+      builtin: { enabled: false },
+      luaexpert: { enabled: false },
+      shiny: { enabled: false },
+      oracle: { enabled: false },
+      konstant: { enabled: false },
+      fission: { enabled: false },
+      custom: { enabled: false },
+      "custom:fallback-first": {
+        enabled: true,
+        endpoint: "https://first.example/decompile",
+        options: { name: "First", requestFormat: "plain-base64", responseFormat: "text" },
+      },
+      "custom:fallback-second": {
+        enabled: true,
+        endpoint: "https://second.example/decompile",
+        options: { name: "Second", requestFormat: "plain-base64", responseFormat: "text" },
+      },
+    },
+  });
+
+  const result = await decompileBytecode(settings, {
+    bytecodeBase64: Buffer.from("bytecode").toString("base64"),
+    clientId: "multiple-custom-fallbacks",
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.providerId, "custom:fallback-second");
+  assert.deepEqual(calls, [
+    "https://first.example/decompile",
+    "https://second.example/decompile",
+  ]);
 });
 
 test("built-in health is client scoped and stale observations are rejected", () => {

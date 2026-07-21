@@ -6,13 +6,69 @@
     <title>Roblox MCP — Dashboard</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Source+Sans+3:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="/dashboard.css">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/styles/github-dark.min.css">
+    <link rel="stylesheet" href="/theme-settings.css">
+    <link rel="stylesheet" href="/custom-provider-editor.css">
+    <link rel="stylesheet" href="/client-setup.css">
+    <link id="highlightTheme" rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/styles/github-dark.min.css">
+    <script>
+        (() => {
+            const storageKey = 'roblox-mcp-dashboard-theme';
+            const knownThemes = new Set(['default', 'claude', 'chatgpt', 'github-dark', 'github-light', 'custom']);
+            const customProperties = new Set([
+                '--bg', '--surface', '--surface-raised', '--surface-hover', '--border', '--border-light',
+                '--accent', '--blue', '--blue-dim', '--text', '--text-secondary', '--text-tertiary',
+                '--topbar-bg', '--code-bg', '--overlay', '--shadow', '--shadow-soft', '--contrast-text',
+                '--lift-overlay', '--media-chrome-bg', '--theme-color-scheme', '--sans', '--mono'
+            ]);
+            const sansFonts = {
+                geist: "'Geist', -apple-system, system-ui, sans-serif",
+                'ibm-plex': "'IBM Plex Sans', -apple-system, system-ui, sans-serif",
+                'source-sans': "'Source Sans 3', -apple-system, system-ui, sans-serif",
+                system: "-apple-system, BlinkMacSystemFont, 'Helvetica Neue', sans-serif"
+            };
+            const monoFonts = {
+                'geist-mono': "'Geist Mono', 'SF Mono', monospace",
+                'ibm-plex-mono': "'IBM Plex Mono', 'SF Mono', monospace",
+                'jetbrains-mono': "'JetBrains Mono', 'SF Mono', monospace",
+                'system-mono': "'SF Mono', ui-monospace, monospace"
+            };
+            const customFontStack = value => /^[a-z0-9 _-]{1,60}$/i.test(value || '') ? `'${value}', sans-serif` : null;
+            try {
+                const saved = JSON.parse(localStorage.getItem(storageKey) || '{}');
+                const theme = knownThemes.has(saved.theme) ? saved.theme : 'default';
+                document.documentElement.dataset.theme = theme;
+                if (theme === 'custom' && saved.vars && typeof saved.vars === 'object') {
+                    for (const [property, value] of Object.entries(saved.vars)) {
+                        const validValue = property === '--theme-color-scheme'
+                            ? value === 'light' || value === 'dark'
+                            : typeof value === 'string' && /^#[0-9a-f]{6,8}$/i.test(value);
+                        if (customProperties.has(property) && validValue) {
+                            document.documentElement.style.setProperty(property, value);
+                        }
+                    }
+                }
+                const fonts = saved.fonts && typeof saved.fonts === 'object' ? saved.fonts : {};
+                const sans = sansFonts[fonts.sans] || (fonts.sans === 'custom' ? customFontStack(fonts.customSans) : null);
+                const mono = monoFonts[fonts.mono] || (fonts.mono === 'custom' && /^[a-z0-9 _-]{1,60}$/i.test(fonts.customMono || '') ? `'${fonts.customMono}', monospace` : null);
+                if (sans) document.documentElement.style.setProperty('--sans', sans);
+                if (mono) document.documentElement.style.setProperty('--mono', mono);
+                const light = theme === 'claude' || theme === 'github-light' || (theme === 'custom' && saved.vars?.['--theme-color-scheme'] === 'light');
+                document.getElementById('highlightTheme').href = `https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/styles/github${light ? '' : '-dark'}.min.css`;
+            } catch {
+                document.documentElement.dataset.theme = 'default';
+            }
+        })();
+    </script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/highlight.min.js" defer></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/languages/lua.min.js" defer></script>
 </head>
 <body>
+    <div class="dashboard-background-media" id="dashboardBackgroundMedia" aria-hidden="true">
+        <div class="dashboard-background-image" id="dashboardBackgroundImage"></div>
+        <video class="dashboard-background-video" id="dashboardBackgroundVideo" muted loop autoplay playsinline preload="metadata"></video>
+    </div>
     <!-- ─── Top navbar ─────────────────────────────────────── -->
     <nav class="topbar">
         <div class="topbar-left">
@@ -90,10 +146,18 @@
                             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
                             <input type="text" class="no-client-search" id="noClientSearch" placeholder="Find Client..." autocomplete="off">
                         </div>
-                        <button class="no-client-add-btn" id="addClientBtn" type="button">
-                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14"/><path d="M5 12h14"/></svg>
-                            Add Client
-                        </button>
+                        <div class="no-client-add-wrap">
+                            <button class="no-client-add-btn" id="addClientBtn" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="addClientMenu">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14"/><path d="M5 12h14"/></svg>
+                                Add Client
+                                <svg class="no-client-add-chevron" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 9 6 6 6-6"/></svg>
+                            </button>
+                            <div class="no-client-add-menu" id="addClientMenu" role="menu" hidden>
+                                <button type="button" role="menuitem" data-add-client-kind="roblox">Roblox client</button>
+                                <button type="button" role="menuitem" data-add-client-kind="mcp">MCP relay</button>
+                                <button type="button" role="menuitem" data-add-client-kind="harness">Harness</button>
+                            </div>
+                        </div>
                     </div>
                     <div class="no-client-list" id="noClientList">
                         <div class="no-client-empty">
@@ -337,73 +401,47 @@
 
             <!-- ─── Settings view (home mode) ───────────────────── -->
             <div class="view" id="viewSettings" style="display:none">
-                <div class="settings-header"><h2 class="settings-title">Settings</h2><p class="settings-sub">Configure semantic search and decompiler fallbacks</p></div>
-                <div class="settings-card">
+                <div class="settings-header"><h2 class="settings-title">General</h2></div>
+                <section class="settings-section settings-section--general" aria-label="General settings">
+                <div class="settings-card" id="themeSettingsCard">
                     <div class="settings-card-body">
-                        <div class="settings-card-heading-row">
-                            <div>
-                                <div class="settings-card-title">Semantic Search</div>
-                                <div class="settings-card-desc">Enable natural language script search and embedding indexing.</div>
-                            </div>
-                            <label class="settings-toggle-row settings-toggle-row--compact">
-                                <span>Enabled</span>
-                                <div class="toggle-switch">
-                                    <input type="checkbox" id="settingsSemanticEnabled" checked>
-                                    <span class="toggle-track"><span class="toggle-thumb"></span></span>
-                                </div>
-                            </label>
+                        <div class="settings-card-title">Appearance</div>
+                        <div class="settings-card-desc">Choose a dashboard theme or build a palette of your own.</div>
+                        <div class="settings-theme-grid" id="themePresetGrid" role="radiogroup" aria-label="Dashboard theme">
+                            <button class="settings-theme-option" type="button" data-theme-option="default" role="radio" aria-checked="false" style="--preview-bg:#0a0a0a;--preview-surface:#171717;--preview-accent:#3b82f6;--preview-text:#ededed">
+                                <span class="settings-theme-preview" aria-hidden="true"><span></span><span></span><span></span><span></span></span>
+                                <span class="settings-theme-copy"><strong>Default</strong><span>Original dashboard</span></span>
+                                <span class="settings-theme-check" aria-hidden="true">✓</span>
+                            </button>
+                            <button class="settings-theme-option" type="button" data-theme-option="claude" role="radio" aria-checked="false" style="--preview-bg:#f7f4ed;--preview-surface:#fcfaf5;--preview-accent:#c15f3c;--preview-text:#2d2926">
+                                <span class="settings-theme-preview" aria-hidden="true"><span></span><span></span><span></span><span></span></span>
+                                <span class="settings-theme-copy"><strong>Claude</strong><span>Anthropic warm</span></span>
+                                <span class="settings-theme-check" aria-hidden="true">✓</span>
+                            </button>
+                            <button class="settings-theme-option" type="button" data-theme-option="chatgpt" role="radio" aria-checked="false" style="--preview-bg:#171717;--preview-surface:#2a2a2a;--preview-accent:#10a37f;--preview-text:#ececec">
+                                <span class="settings-theme-preview" aria-hidden="true"><span></span><span></span><span></span><span></span></span>
+                                <span class="settings-theme-copy"><strong>ChatGPT</strong><span>Charcoal and green</span></span>
+                                <span class="settings-theme-check" aria-hidden="true">✓</span>
+                            </button>
+                            <button class="settings-theme-option" type="button" data-theme-option="github-dark" role="radio" aria-checked="false" style="--preview-bg:#0d1117;--preview-surface:#21262d;--preview-accent:#58a6ff;--preview-text:#e6edf3">
+                                <span class="settings-theme-preview" aria-hidden="true"><span></span><span></span><span></span><span></span></span>
+                                <span class="settings-theme-copy"><strong>GitHub Dark</strong><span>Developer dark</span></span>
+                                <span class="settings-theme-check" aria-hidden="true">✓</span>
+                            </button>
+                            <button class="settings-theme-option" type="button" data-theme-option="github-light" role="radio" aria-checked="false" style="--preview-bg:#f6f8fa;--preview-surface:#ffffff;--preview-accent:#0969da;--preview-text:#1f2328">
+                                <span class="settings-theme-preview" aria-hidden="true"><span></span><span></span><span></span><span></span></span>
+                                <span class="settings-theme-copy"><strong>GitHub Light</strong><span>Developer light</span></span>
+                                <span class="settings-theme-check" aria-hidden="true">✓</span>
+                            </button>
+                            <button class="settings-theme-option" type="button" data-theme-option="custom" role="radio" aria-checked="false" id="customThemeOption">
+                                <span class="settings-theme-preview settings-theme-preview--custom" aria-hidden="true"><span></span><span></span><span></span><span></span></span>
+                                <span class="settings-theme-copy"><strong>Custom</strong><span>Open theme builder</span></span>
+                                <span class="settings-theme-check" aria-hidden="true">✓</span>
+                            </button>
                         </div>
-                    </div>
-                    <div class="settings-card-footer"><span class="settings-card-footer-hint">When disabled, semantic indexing and provider controls are hidden.</span><button class="settings-save-btn" id="saveSemanticEnabledBtn">Save</button></div>
-                </div>
-                <div class="settings-card" data-semantic-settings-panel>
-                    <div class="settings-card-body">
-                        <div class="settings-card-title">Embedding Provider</div>
-                        <div class="settings-card-desc">Choose between OpenAI or Ollama for generating script embeddings.</div>
-                        <div class="settings-provider-toggle" id="providerToggle">
-                            <button class="settings-provider-btn settings-provider-btn--active" data-provider="openai">OpenAI</button>
-                            <button class="settings-provider-btn" data-provider="ollama">Ollama</button>
-                        </div>
-                    </div>
-                    <div class="settings-card-footer"><span class="settings-card-footer-hint">Changing provider clears all cached indexes.</span><button class="settings-save-btn" id="saveProviderBtn">Save</button></div>
-                </div>
-                <div class="settings-card" id="settingsOpenai" data-semantic-settings-panel>
-                    <div class="settings-card-body">
-                        <div class="settings-card-title">OpenAI Configuration</div>
-                        <div class="settings-card-desc">API key, compatible API base URL, and model for embeddings.</div>
-                        <div class="settings-field"><label>API Key</label><input type="password" id="settingsOpenaiKey" placeholder="sk-..."></div>
-                        <div class="settings-field"><label>Base URL</label><input type="text" id="settingsOpenaiUrl" placeholder="https://api.openai.com/v1"></div>
-                        <div class="settings-field"><label>Model</label><input type="text" id="settingsOpenaiModel" placeholder="text-embedding-3-small"></div>
-                    </div>
-                    <div class="settings-card-footer"><span class="settings-card-footer-hint">Stored locally in your home directory at .roblox-mcp/semantic-search.json</span><button class="settings-save-btn" id="saveOpenaiBtn">Save</button></div>
-                </div>
-                <div class="settings-card" id="settingsOllama" style="display:none" data-semantic-settings-panel>
-                    <div class="settings-card-body">
-                        <div class="settings-card-title">Ollama Configuration</div>
-                        <div class="settings-card-desc">Base URL and model for local Ollama embeddings.</div>
-                        <div class="settings-field"><label>Base URL</label><input type="text" id="settingsOllamaUrl" placeholder="http://localhost:11434"></div>
-                        <div class="settings-field"><label>Model</label><input type="text" id="settingsOllamaModel" placeholder="embeddinggemma"></div>
-                    </div>
-                    <div class="settings-card-footer"><span class="settings-card-footer-hint">Ensure Ollama is running locally.</span><button class="settings-save-btn" id="saveOllamaBtn">Save</button></div>
-                </div>
-                <div class="settings-card" data-semantic-settings-panel>
-                    <div class="settings-card-body">
-                        <div class="settings-card-title">Embedding Cache</div>
-                        <div class="settings-card-desc">Reuse script embeddings after server restarts or Roblox reconnects.</div>
-                        <label class="settings-toggle-row">
-                            <div class="toggle-switch">
-                                <input type="checkbox" id="settingsSaveEmbeddings">
-                                <span class="toggle-track"><span class="toggle-thumb"></span></span>
-                            </div>
-                            <span>Persist embeddings to disk</span>
-                        </label>
                     </div>
                     <div class="settings-card-footer">
-                        <span class="settings-card-footer-hint">Stored locally in your home directory at .roblox-mcp/semantic-embeddings.json</span>
-                        <div class="settings-card-actions">
-                            <button class="settings-delete-btn" id="deleteEmbeddingCacheBtn">Delete Cache</button>
-                            <button class="settings-save-btn" id="saveEmbeddingCacheBtn">Save</button>
-                        </div>
+                        <span class="settings-card-footer-hint" id="themeSettingsHint">Saved automatically to .roblox-mcp/dashboard-settings.json</span>
                     </div>
                 </div>
                 <div class="settings-card">
@@ -425,7 +463,73 @@
                         </div>
                         <div class="settings-decompiler-board" id="settingsDecompilerList"></div>
                     </div>
-                    <div class="settings-card-footer"><span class="settings-card-footer-hint">Stored locally in your home directory at .roblox-mcp/decompiler-settings.json</span><button class="settings-save-btn" id="saveDecompilerBtn">Save</button></div>
+                    <div class="settings-card-footer"><span class="settings-card-footer-hint">Saved automatically to .roblox-mcp/decompiler-settings.json</span></div>
+                </div>
+                </section>
+                <div class="settings-header settings-header--section"><h2 class="settings-title">Semantic</h2></div>
+                <section class="settings-section" aria-label="Semantic settings">
+                <div class="settings-card">
+                    <div class="settings-card-body">
+                        <div class="settings-card-title">Semantic Search</div>
+                        <div class="settings-card-desc">Enable natural language script search and embedding indexing.</div>
+                        <label class="settings-toggle-row">
+                            <div class="toggle-switch">
+                                <input type="checkbox" id="settingsSemanticEnabled" checked>
+                                <span class="toggle-track"><span class="toggle-thumb"></span></span>
+                            </div>
+                            <span>Enabled</span>
+                        </label>
+                    </div>
+                    <div class="settings-card-footer"><span class="settings-card-footer-hint">Changes are saved automatically. When disabled, semantic indexing and provider controls are hidden.</span></div>
+                </div>
+                <div class="settings-card" data-semantic-settings-panel>
+                    <div class="settings-card-body">
+                        <div class="settings-card-title">Embedding Provider</div>
+                        <div class="settings-card-desc">Choose between OpenAI or Ollama for generating script embeddings.</div>
+                        <div class="settings-provider-toggle" id="providerToggle">
+                            <button class="settings-provider-btn settings-provider-btn--active" data-provider="openai">OpenAI</button>
+                            <button class="settings-provider-btn" data-provider="ollama">Ollama</button>
+                        </div>
+                    </div>
+                    <div class="settings-card-footer"><span class="settings-card-footer-hint">Changes are saved automatically. Changing provider clears all cached indexes.</span></div>
+                </div>
+                <div class="settings-card" id="settingsOpenai" data-semantic-settings-panel>
+                    <div class="settings-card-body">
+                        <div class="settings-card-title">OpenAI Configuration</div>
+                        <div class="settings-card-desc">API key, compatible API base URL, and model for embeddings.</div>
+                        <div class="settings-field"><label>API Key</label><input type="password" id="settingsOpenaiKey" placeholder="sk-..."></div>
+                        <div class="settings-field"><label>Base URL</label><input type="text" id="settingsOpenaiUrl" placeholder="https://api.openai.com/v1"></div>
+                        <div class="settings-field"><label>Model</label><input type="text" id="settingsOpenaiModel" placeholder="text-embedding-3-small"></div>
+                    </div>
+                    <div class="settings-card-footer"><span class="settings-card-footer-hint">Saved automatically to .roblox-mcp/semantic-search.json</span></div>
+                </div>
+                <div class="settings-card" id="settingsOllama" style="display:none" data-semantic-settings-panel>
+                    <div class="settings-card-body">
+                        <div class="settings-card-title">Ollama Configuration</div>
+                        <div class="settings-card-desc">Base URL and model for local Ollama embeddings.</div>
+                        <div class="settings-field"><label>Base URL</label><input type="text" id="settingsOllamaUrl" placeholder="http://localhost:11434"></div>
+                        <div class="settings-field"><label>Model</label><input type="text" id="settingsOllamaModel" placeholder="embeddinggemma"></div>
+                    </div>
+                    <div class="settings-card-footer"><span class="settings-card-footer-hint">Changes are saved automatically. Ensure Ollama is running locally.</span></div>
+                </div>
+                <div class="settings-card" data-semantic-settings-panel>
+                    <div class="settings-card-body">
+                        <div class="settings-card-title">Embedding Cache</div>
+                        <div class="settings-card-desc">Reuse script embeddings after server restarts or Roblox reconnects.</div>
+                        <label class="settings-toggle-row">
+                            <div class="toggle-switch">
+                                <input type="checkbox" id="settingsSaveEmbeddings">
+                                <span class="toggle-track"><span class="toggle-thumb"></span></span>
+                            </div>
+                            <span>Persist embeddings to disk</span>
+                        </label>
+                    </div>
+                    <div class="settings-card-footer">
+                        <span class="settings-card-footer-hint">Stored locally in your home directory at .roblox-mcp/semantic-embeddings.json</span>
+                        <div class="settings-card-actions">
+                            <button class="settings-delete-btn" id="deleteEmbeddingCacheBtn">Delete Cache</button>
+                        </div>
+                    </div>
                 </div>
                 <div class="settings-card" data-semantic-settings-panel>
                     <div class="settings-card-body">
@@ -435,6 +539,7 @@
                         <div id="settingsTestResult"></div>
                     </div>
                 </div>
+                </section>
             </div>
 
             <!-- ─── Tools view ────────────────────────────────── -->
@@ -529,6 +634,187 @@
     </div>
     <!-- Toast notifications -->
     <div class="toast-container" id="toastContainer"></div>
+
+    <!-- Custom Theme Builder -->
+    <div class="modal-overlay" id="customThemeModal">
+        <div class="modal-dialog custom-theme-modal" role="dialog" aria-modal="true" aria-labelledby="customThemeModalTitle">
+            <div class="custom-theme-modal-header">
+                <div>
+                    <div class="modal-title" id="customThemeModalTitle">Custom theme</div>
+                    <div class="modal-desc">Preview dashboard components while you tune the palette and typography.</div>
+                </div>
+                <button class="modal-icon-btn" id="customThemeCloseBtn" type="button" title="Close theme builder" aria-label="Close theme builder">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+                </button>
+            </div>
+            <div class="custom-theme-layout">
+                <section class="custom-theme-preview-pane" aria-label="Theme preview">
+                    <div class="custom-theme-preview-toolbar">
+                        <span>Component preview</span>
+                        <span id="customThemeModeLabel">Dark palette</span>
+                    </div>
+                    <div class="custom-theme-canvas" id="customThemeCanvas">
+                        <div class="theme-demo-app">
+                            <div class="theme-demo-background-media" id="themeDemoBackgroundMedia" aria-hidden="true">
+                                <div id="themeDemoBackgroundImage"></div>
+                                <video id="themeDemoBackgroundVideo" muted loop autoplay playsinline preload="metadata"></video>
+                            </div>
+                            <div class="theme-demo-topbar">
+                                <div class="theme-demo-brand"><span class="theme-demo-mark"></span>MCP Dashboard</div>
+                                <div class="theme-demo-user">UP</div>
+                            </div>
+                            <div class="theme-demo-body">
+                                <nav class="theme-demo-sidebar" aria-label="Preview navigation">
+                                    <button class="is-active" type="button">
+                                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+                                        Overview
+                                    </button>
+                                    <button type="button">
+                                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg>
+                                        Scripts
+                                    </button>
+                                    <button type="button">
+                                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06A1.65 1.65 0 0 0 15 19.4a1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06A2 2 0 1 1 7.1 4.3l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09A1.65 1.65 0 0 0 15 4.6a1.65 1.65 0 0 0 1.82-.33l.06-.06A2 2 0 1 1 19.7 7.1l-.06.06A1.65 1.65 0 0 0 19.4 9c.26.6.85 1 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+                                        Settings
+                                    </button>
+                                </nav>
+                                <div class="theme-demo-content">
+                                    <div class="theme-demo-heading">
+                                        <div><h3>Workspace</h3><p>Dashboard components using your current choices.</p></div>
+                                        <span class="theme-demo-status">Connected</span>
+                                    </div>
+                                    <div class="theme-demo-summary">
+                                        <div><span>Connected client</span><strong>MockPlayer</strong></div>
+                                        <div><span>Transport</span><strong>WebSocket</strong></div>
+                                        <div><span>Scripts indexed</span><strong>128</strong></div>
+                                    </div>
+                                    <div class="theme-demo-grid">
+                                        <div class="theme-demo-card">
+                                            <div class="theme-demo-card-title">Run a tool</div>
+                                            <label>Search pattern<input type="text" value="PlayerController" readonly></label>
+                                            <div class="theme-demo-actions"><button class="primary" type="button">Run tool</button><button type="button">Cancel</button></div>
+                                        </div>
+                                        <div class="theme-demo-card">
+                                            <div class="theme-demo-card-title">Connection</div>
+                                            <div class="theme-demo-list-row"><span>Roblox client</span><strong>Active</strong></div>
+                                            <div class="theme-demo-list-row"><span>MCP relay</span><strong>Idle</strong></div>
+                                            <div class="theme-demo-progress"><span></span></div>
+                                        </div>
+                                    </div>
+                                    <div class="theme-demo-code">
+                                        <div><span>PlayerController.luau</span><span>Lua</span></div>
+                                        <pre><code><i>local</i> Players = game:GetService(<b>"Players"</b>)
+<i>return</i> Players.LocalPlayer</code></pre>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+                <aside class="custom-theme-controls" aria-label="Theme controls">
+                    <section class="custom-theme-control-section">
+                        <div class="custom-theme-control-heading"><span>Palette</span><button type="button" id="resetCustomThemeBtn">Reset</button></div>
+                        <div class="settings-theme-colors custom-theme-color-list">
+                            <label><input type="color" id="themeColorBackground" data-theme-color="background" value="#0a0a0a"><span>Background</span><output>#0a0a0a</output></label>
+                            <label><input type="color" id="themeColorSurface" data-theme-color="surface" value="#111111"><span>Surface</span><output>#111111</output></label>
+                            <label><input type="color" id="themeColorRaised" data-theme-color="raised" value="#171717"><span>Raised surface</span><output>#171717</output></label>
+                            <label><input type="color" id="themeColorBorder" data-theme-color="border" value="#262626"><span>Border</span><output>#262626</output></label>
+                            <label><input type="color" id="themeColorAccent" data-theme-color="accent" value="#3b82f6"><span>Accent</span><output>#3b82f6</output></label>
+                            <label><input type="color" id="themeColorText" data-theme-color="text" value="#ededed"><span>Text</span><output>#ededed</output></label>
+                            <label><input type="color" id="themeColorMuted" data-theme-color="muted" value="#a1a1a1"><span>Muted text</span><output>#a1a1a1</output></label>
+                        </div>
+                    </section>
+                    <section class="custom-theme-control-section">
+                        <div class="custom-theme-control-heading"><span>Background media</span></div>
+                        <div class="custom-theme-media-fields">
+                            <label>
+                                <span>Type</span>
+                                <select id="themeBackgroundType">
+                                    <option value="none">None</option>
+                                    <option value="image">Image or GIF</option>
+                                    <option value="video">Video</option>
+                                </select>
+                            </label>
+                            <label id="themeBackgroundUrlField">
+                                <span>Media URL</span>
+                                <input type="url" id="themeBackgroundUrl" placeholder="https://example.com/background.webp">
+                            </label>
+                            <div class="custom-theme-media-row" id="themeBackgroundOptions">
+                                <label>
+                                    <span>Fit</span>
+                                    <select id="themeBackgroundFit">
+                                        <option value="cover">Cover</option>
+                                        <option value="contain">Contain</option>
+                                    </select>
+                                </label>
+                                <label>
+                                    <span>Opacity <output id="themeBackgroundOpacityValue">35%</output></span>
+                                    <input type="range" id="themeBackgroundOpacity" min="5" max="100" step="5" value="35">
+                                </label>
+                            </div>
+                            <div class="custom-theme-media-error" id="themeBackgroundMediaError" role="alert"></div>
+                        </div>
+                    </section>
+                    <section class="custom-theme-control-section">
+                        <div class="custom-theme-control-heading"><span>Typography</span></div>
+                        <div class="settings-theme-fonts custom-theme-font-list">
+                            <label>
+                                <span>Interface font</span>
+                                <select id="themeSansFont">
+                                    <option value="geist">Geist</option>
+                                    <option value="ibm-plex">IBM Plex Sans</option>
+                                    <option value="source-sans">Source Sans 3</option>
+                                    <option value="system">System</option>
+                                    <option value="custom">Custom installed font</option>
+                                </select>
+                                <input type="text" id="themeCustomSans" placeholder="Font family name" maxlength="60" hidden>
+                            </label>
+                            <label>
+                                <span>Code font</span>
+                                <select id="themeMonoFont">
+                                    <option value="geist-mono">Geist Mono</option>
+                                    <option value="ibm-plex-mono">IBM Plex Mono</option>
+                                    <option value="jetbrains-mono">JetBrains Mono</option>
+                                    <option value="system-mono">System monospace</option>
+                                    <option value="custom">Custom installed font</option>
+                                </select>
+                                <input type="text" id="themeCustomMono" placeholder="Font family name" maxlength="60" hidden>
+                            </label>
+                        </div>
+                    </section>
+                    <section class="custom-theme-control-section">
+                        <div class="custom-theme-control-heading"><span>Theme JSON</span></div>
+                        <p class="custom-theme-json-description">Copy this palette, typography, and background setup or import one from another dashboard.</p>
+                        <div class="custom-theme-json-buttons">
+                            <button type="button" id="copyThemeJsonBtn">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                                Copy JSON
+                            </button>
+                            <button type="button" id="pasteThemeJsonBtn" aria-expanded="false">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><rect x="8" y="2" width="8" height="4" rx="1"/></svg>
+                                Paste JSON
+                            </button>
+                        </div>
+                        <div class="custom-theme-json-import" id="themeJsonImportPanel" hidden>
+                            <label for="themeJsonInput">Theme JSON</label>
+                            <textarea id="themeJsonInput" placeholder='{"version":1,"theme":"custom",...}' spellcheck="false"></textarea>
+                            <div class="custom-theme-json-error" id="themeJsonError" role="alert"></div>
+                            <div class="custom-theme-json-actions">
+                                <button type="button" id="cancelThemeJsonBtn">Cancel</button>
+                                <button type="button" id="importThemeJsonBtn">Import theme</button>
+                            </div>
+                        </div>
+                    </section>
+                </aside>
+            </div>
+            <div class="custom-theme-modal-footer">
+                <span>Changes are saved automatically.</span>
+                <div>
+                    <button class="modal-btn modal-btn--cancel" type="button" id="customThemeCancelBtn">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
 
     <!-- Confirmation Modal -->
     <div class="modal-overlay" id="confirmModal">
@@ -647,13 +933,14 @@
                     </div>
                 </div>
                 <div class="decompiler-modal-footer">
-                    <button class="modal-btn modal-btn--cancel" type="button" id="decompilerRuntimeCancelBtn">Cancel</button>
-                    <button class="modal-btn modal-btn--primary" type="button" id="decompilerRuntimeSaveBtn">Save</button>
+                    <span class="decompiler-modal-note">Saved automatically</span>
+                    <button class="modal-btn modal-btn--cancel" type="button" id="decompilerRuntimeCancelBtn">Close</button>
                 </div>
             </div>
         </div>
     </div>
 
-    <script src="dashboard.js"></script>
+    <script src="custom-provider-editor.js"></script>
+    <script type="module" src="dashboard.js"></script>
 </body>
 </html>
