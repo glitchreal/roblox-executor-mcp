@@ -23,7 +23,7 @@
   </defs>
 
   <!-- Outer Canvas Container (Original 1200x400 Dimensions) -->
-  <rect width="1200" height="400" rx="20" class="bg-card" />
+  <rect width="1200" height="400" class="bg-card" />
 
   <!-- Perfectly Centered Title + Claude GIF Row -->
   <g transform="translate(355, 142)">
