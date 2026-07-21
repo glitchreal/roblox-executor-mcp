@@ -17,7 +17,7 @@ export function normalizeBridgeUrl(value) {
 export function buildLoaderSnippet(bridgeUrl = DEFAULT_BRIDGE_URL) {
   const normalized = normalizeBridgeUrl(bridgeUrl);
   if (normalized === DEFAULT_BRIDGE_URL) {
-    return `local bridgeUrl = getgenv().BridgeURL or "${DEFAULT_BRIDGE_URL}"\nloadstring(game:HttpGet("http://" .. bridgeUrl .. "/script.luau"))()`;
+    return `while not getgenv().MCP_Loaded do\n    local bridgeUrl = getgenv().BridgeURL or "${DEFAULT_BRIDGE_URL}"\n    pcall(function() loadstring(game:HttpGet("http://" .. bridgeUrl .. "/script.luau"))() end)\n\n    task.wait(0.15)\nend`;
   }
-  return `getgenv().BridgeURL = "${normalized}"\nlocal bridgeUrl = getgenv().BridgeURL or "${DEFAULT_BRIDGE_URL}"\nloadstring(game:HttpGet("http://" .. bridgeUrl .. "/script.luau"))()`;
+  return `getgenv().BridgeURL = "${normalized}"\nwhile not getgenv().MCP_Loaded do\n    local bridgeUrl = getgenv().BridgeURL or "${DEFAULT_BRIDGE_URL}"\n    pcall(function() loadstring(game:HttpGet("http://" .. bridgeUrl .. "/script.luau"))() end)\n\n    task.wait(0.15)\nend`;
 }

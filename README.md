@@ -103,8 +103,12 @@ If you prefer to configure a client yourself, use the setup guide for your clien
 The installer prints this for you. Put it in your executor or Auto Execute:
 
 ```lua
-local bridgeUrl = getgenv().BridgeURL or "localhost:16384"
-loadstring(game:HttpGet("http://" .. bridgeUrl .. "/script.luau"))()
+while not getgenv().MCP_Loaded do
+    local bridgeUrl = getgenv().BridgeURL or "localhost:16384"
+    pcall(function() loadstring(game:HttpGet("http://" .. bridgeUrl .. "/script.luau"))() end)
+
+    task.wait(0.15)
+end
 ```
 
 **Optional settings** (set before the `loadstring`):
