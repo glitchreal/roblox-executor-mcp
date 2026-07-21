@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/banner.svg" alt="Roblox Executor MCP" width="900"/>
+  <img src="docs/banner-new.svg" alt="Roblox Executor MCP" width="900"/>
 </p>
 
 # Roblox Executor MCP Server
