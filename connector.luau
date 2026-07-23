@@ -401,19 +401,34 @@ if not f then continue end
 
 c.ActiveWorkers+=1
 c.TaskLibrary.defer(function()
+local g=f
+while g do
 if not c.IsDestroyed and c.ManagerGeneration==e then
-local g,h=pcall(
+local h,i=pcall(
 c.MainCallback,
-table.unpack(f,1,f.n)
+table.unpack(g,1,g.n)
 )
-if not g then
+if not h then
 if c.OnError then
 pcall(
 c.OnError,
-h,
-table.unpack(f,1,f.n)
+i,
+table.unpack(g,1,g.n)
 )
 end
+end
+end
+
+if c.IsDestroyed or c.ManagerGeneration~=e or c.ActiveWorkers>c.MaxConcurrent then
+break
+end
+
+if c.QueueHead<=c.QueueTail then
+g=c.Queue[c.QueueHead]
+c.Queue[c.QueueHead]=nil
+c.QueueHead+=1
+else
+g=nil
 end
 end
 

@@ -34,19 +34,34 @@ function WorkerPool:DrainQueue(expectedGeneration)
 
         self.ActiveWorkers += 1
         self.TaskLibrary.defer(function()
-            if not self.IsDestroyed and self.ManagerGeneration == managerGeneration then
-                local callbackOk, callbackError = pcall(
-                    self.MainCallback,
-                    table.unpack(taskData, 1, taskData.n)
-                )
-                if not callbackOk then
-                    if self.OnError then
-                        pcall(
-                            self.OnError,
-                            callbackError,
-                            table.unpack(taskData, 1, taskData.n)
-                        )
+            local currentTask = taskData
+            while currentTask do
+                if not self.IsDestroyed and self.ManagerGeneration == managerGeneration then
+                    local callbackOk, callbackError = pcall(
+                        self.MainCallback,
+                        table.unpack(currentTask, 1, currentTask.n)
+                    )
+                    if not callbackOk then
+                        if self.OnError then
+                            pcall(
+                                self.OnError,
+                                callbackError,
+                                table.unpack(currentTask, 1, currentTask.n)
+                            )
+                        end
                     end
+                end
+
+                if self.IsDestroyed or self.ManagerGeneration ~= managerGeneration or self.ActiveWorkers > self.MaxConcurrent then
+                    break
+                end
+
+                if self.QueueHead <= self.QueueTail then
+                    currentTask = self.Queue[self.QueueHead]
+                    self.Queue[self.QueueHead] = nil
+                    self.QueueHead += 1
+                else
+                    currentTask = nil
                 end
             end
 
