@@ -49,3 +49,19 @@ test("dashboard add menu routes harness installs through the client setup API", 
   assert.match(route, /"--install-only"/);
   assert.match(route, /restartMessage/);
 });
+
+test("every dashboard feature script referenced by HTML has a production route", async () => {
+  const html = await fs.readFile(
+    path.join(repoRoot, "src", "http", "assets", "dashboard", "index.html"),
+    "utf8"
+  );
+  const featureScripts = [...html.matchAll(/<script(?:\s+type="module")?\s+src="([^"/][^"]*\.js)"/g)]
+    .map((match) => match[1])
+    .filter((script) => !script.includes("://"));
+
+  assert.ok(featureScripts.includes("custom-provider-editor.js"));
+  for (const script of featureScripts) {
+    const route = path.join(repoRoot, "src", "http", "routes", "(dashboard)", `${script}.ts`);
+    await assert.doesNotReject(fs.access(route), `missing production route for ${script}`);
+  }
+});
