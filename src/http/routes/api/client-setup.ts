@@ -3,7 +3,7 @@ import fs from "node:fs";
 import type { IncomingMessage, ServerResponse } from "http";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { SERVER_ROOT } from "../../../config.js";
 import {
   DEFAULT_BRIDGE_URL,
   SERVER_PORT,
@@ -18,10 +18,12 @@ import { readJsonBody } from "../../body.js";
 
 const COMMAND_TIMEOUT_MS = 30000;
 const HARNESS_INSTALL_TIMEOUT_MS = 10 * 60 * 1000;
-const HARNESS_INSTALLER_PATH = fileURLToPath(
-  new URL("../../../../scripts/install-harnesses.mjs", import.meta.url)
+const HARNESS_INSTALLER_PATH = path.join(
+  SERVER_ROOT,
+  "scripts",
+  "install-harnesses.mjs"
 );
-const REPO_ROOT = path.dirname(path.dirname(HARNESS_INSTALLER_PATH));
+const REPO_ROOT = SERVER_ROOT;
 const LINUX_INSTALL_COMMAND = "curl -fsSL https://tailscale.com/install.sh | sh";
 const TAILSCALE_DOWNLOAD_URL = "https://tailscale.com/download";
 const TAILSCALE_CLI_URL = "https://tailscale.com/docs/reference/tailscale-cli";

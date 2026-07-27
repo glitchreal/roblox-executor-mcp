@@ -10,20 +10,28 @@
   "files": [
     "dist",
     "connector.luau",
-    "README.md"
+    "README.md",
+    "skills"
   ],
   "scripts": {
     "build:connector": "darklua process connector-src/init.luau connector.luau",
-    "build": "node scripts/clean-dist.mjs && tsc && node scripts/copy-assets.mjs",
+    "build": "node scripts/build-server.mjs",
     "build:all": "npm run build:connector && npm run build",
     "test": "npm run build:all && node --test tests/*.test.mjs && luau tests/connector-modules.test.luau",
     "dev": "node scripts/dev-server.mjs",
     "dev:dist": "bun run build && bun scripts/dev-server.mjs --dist",
     "install:tailscale": "bun scripts/install-tailscale.mjs",
-    "install:harness": "node scripts/run-with-bun.mjs scripts/install-harnesses.mjs",
-    "install:harnesses": "node scripts/run-with-bun.mjs scripts/install-harnesses.mjs",
+    "install:harness": "node scripts/install-harnesses-web.mjs",
+    "install:harnesses": "node scripts/install-harnesses-web.mjs",
+    "install:harnesses:cli": "node scripts/run-with-bun.mjs scripts/install-harnesses.mjs",
+    "install:harnesses:web": "node scripts/install-harnesses-web.mjs",
+    "install:harnesses:preview": "node scripts/install-harnesses-web.mjs --preview",
+    "benchmark:roblox-mcp": "npm run build && node benchmarks/roblox-mcp/src/run.mjs",
+    "benchmark:roblox-mcp:check": "npm run build && node benchmarks/roblox-mcp/src/run.mjs --dry-run",
+    "benchmark:roblox-mcp:import": "node benchmarks/roblox-mcp/src/import-capture.mjs",
     "getscript": "bun scripts/install-harnesses.mjs --get-script",
     "start": "node dist/index.js",
+    "start:core": "node dist/core.js",
     "update": "bun scripts/install-harnesses.mjs --update",
     "prepare": "bun run build"
   },

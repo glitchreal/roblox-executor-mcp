@@ -1,5 +1,7 @@
 import { createClientSetup } from './client-setup.js';
 import { createThemeSettings } from './theme-settings.js';
+import { createUpdateSettings } from './update-settings.js';
+import { createSystemSettings } from './system-settings.js';
 
 /* ── State ────────────────────────────────────────────────── */
 let selectedClientId = null;
@@ -465,6 +467,8 @@ function renderNoClientList(filter) {
 
 /* Add client setup lives in client-setup.js. */
 createClientSetup({ $, escapeHtml, showToast, dashboardApiFetch });
+createUpdateSettings({ $, dashboardApiFetch, showToast });
+const systemSettings = createSystemSettings({ $, dashboardApiFetch, showToast });
 
 /* ── Select client ───────────────────────────────────────── */
 function selectClient(clientId) {
@@ -2098,6 +2102,7 @@ function showToast(message, type = 'info', duration = 3500) {
 
 async function loadSettings() {
     await Promise.allSettled([
+        systemSettings.refresh(),
         loadSemanticSettings(),
         loadDecompilerSettings()
     ]);

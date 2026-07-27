@@ -3,6 +3,10 @@ dist/*
 
 # node modules
 node_modules/*
+.roblox-mcp-current.json
+.roblox-mcp-releases/
+.roblox-mcp-update-*
+.roblox-mcp-update-backup-*
 
 # pnpm store
 .pnpm-store/*

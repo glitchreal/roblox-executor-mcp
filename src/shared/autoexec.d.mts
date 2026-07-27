@@ -27,6 +27,13 @@ export interface AutoexecWriteResult {
 export function getAutoexecTargets(): AutoexecTarget[];
 export function getDetectedAutoexecTargets(): AutoexecTarget[];
 export function getAutoexecStatus(): AutoexecStatus;
+export function resolveAutoexecHome(options?: {
+  platform?: NodeJS.Platform;
+  homeDir?: string;
+  sudoUser?: string;
+  usersRoot?: string;
+  folderExists?: (folder: string) => boolean;
+}): string;
 export function formatAutoexecScript(loaderSnippet: string): string;
 export function writeLoaderToAutoexec(
   loaderSnippet: string,

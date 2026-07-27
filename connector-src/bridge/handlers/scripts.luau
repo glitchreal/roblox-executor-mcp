@@ -18,7 +18,10 @@ local QueueMappedScriptSource = context.QueueMappedScriptSource
 
             assert(typeof(scriptInstance) == "Instance", "Script instance is not an instance.")
             assert(scriptInstance:IsA("LuaSourceContainer"), "Script instance is not a LuaSourceContainer (Script, LocalScript, or ModuleScript).")
-            assert(not (scriptInstance:IsA("Script") and scriptInstance.RunContext == Enum.RunContext.Server), "Script instance is a Server Script.")
+            assert(not (
+                scriptInstance.ClassName == "Script" and
+                scriptInstance.RunContext ~= Enum.RunContext.Client
+            ), "Script instance is a server-only Script.")
         end
 
         local scriptHash

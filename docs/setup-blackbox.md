@@ -7,7 +7,7 @@ BLACKBOX AI supports MCP servers through its VS Code extension, but it does not 
 Run the installer, reveal all harnesses if BLACKBOX AI was not detected automatically, and select **BLACKBOX AI (VS Code)**:
 
 ```bash
-npm run install:harnesses -- --show-all-harnesses
+npm run install:harnesses:cli -- --show-all-harnesses
 ```
 
 The installer prints a recipe containing the absolute path to this checkout's built `dist/index.js`.

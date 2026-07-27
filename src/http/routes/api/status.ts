@@ -4,6 +4,7 @@ import { getActiveClients } from "../../../bridge/handlers/shared/registry.js";
 import { getScriptSourceIndex } from "../../../bridge/handlers/shared/script-source-store.js";
 import { loadSemanticSettings, validateSemanticSettings } from "../../../semantic/settings.js";
 import { getSemanticIndexStats } from "../../../semantic/vector-index.js";
+import { getActiveMcpSessionCount } from "../mcp.js";
 
 import { serverStartTime } from "../../../config.js";
 
@@ -12,6 +13,9 @@ export async function GET(_req: IncomingMessage, res: ServerResponse): Promise<v
   const active = getActiveClients();
   const settings = await loadSemanticSettings();
   const canReadSemanticStats = validateSemanticSettings(settings) === null;
+  const mcpSessions = getActiveMcpSessionCount();
+  const legacyRelayClients = relayClients.size;
+  const relayPeers = mcpSessions + legacyRelayClients;
 
   res.writeHead(200, { "Content-Type": "application/json" });
   res.end(
@@ -21,7 +25,12 @@ export async function GET(_req: IncomingMessage, res: ServerResponse): Promise<v
       connected: active.length > 0,
       clientCount: active.length,
       role: "Primary",
-      relayClients: relayClients.size,
+      // Keep relayClients as a compatibility alias for older dashboards.
+      // Modern stdio adapters connect through /mcp rather than /mcp-relay.
+      relayClients: relayPeers,
+      relayPeers,
+      mcpSessions,
+      legacyRelayClients,
       clients: active.map((c) => {
         const scriptIndex = getScriptSourceIndex({
           clientId: c.clientId,

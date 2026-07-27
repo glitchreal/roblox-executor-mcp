@@ -5,9 +5,10 @@ import { fileURLToPath } from "node:url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, "..");
 const src = path.join(root, "src", "http", "assets");
-const dest = path.join(root, "dist", "http", "assets");
+const dist = path.resolve(process.env.ROBLOX_MCP_DIST_DIR || path.join(root, "dist"));
+const dest = path.join(dist, "http", "assets");
 const sharedSrc = path.join(root, "src", "shared");
-const sharedDest = path.join(root, "dist", "shared");
+const sharedDest = path.join(dist, "shared");
 
 if (!fs.existsSync(src)) {
   console.error(`[copy-assets] Source not found: ${src}`);

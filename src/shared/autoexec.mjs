@@ -77,42 +77,43 @@ export function formatAutoexecScript(loaderSnippet) {
 }
 
 function getAutoexecCandidates() {
+  const homeDir = resolveAutoexecHome();
   if (process.platform === "darwin") {
     return [
       {
         id: "macsploit",
         name: "MacSploit",
-        folder: path.join(os.homedir(), "Documents", "Macsploit Automatic Execution"),
+        folder: path.join(homeDir, "Documents", "Macsploit Automatic Execution"),
       },
       {
         id: "macsploit-alt-case",
         name: "MacSploit",
-        folder: path.join(os.homedir(), "Documents", "MacSploit Automatic Execution"),
+        folder: path.join(homeDir, "Documents", "MacSploit Automatic Execution"),
       },
       {
         id: "opiumware-root-autoexec",
         name: "Opiumware",
-        folder: path.join(os.homedir(), "Opiumware", "autoexec"),
+        folder: path.join(homeDir, "Opiumware", "autoexec"),
       },
       {
         id: "opiumware-documents",
         name: "Opiumware",
-        folder: path.join(os.homedir(), "Documents", "Opiumware Automatic Execution"),
+        folder: path.join(homeDir, "Documents", "Opiumware Automatic Execution"),
       },
       {
         id: "opiumware-auto-execute",
         name: "Opiumware",
-        folder: path.join(os.homedir(), "Documents", "Opiumware Auto Execute"),
+        folder: path.join(homeDir, "Documents", "Opiumware Auto Execute"),
       },
       {
         id: "opiumware-autoexec",
         name: "Opiumware",
-        folder: path.join(os.homedir(), "Documents", "Opiumware Autoexec"),
+        folder: path.join(homeDir, "Documents", "Opiumware Autoexec"),
       },
       {
         id: "opiumware-workspace-autoexec",
         name: "Opiumware",
-        folder: path.join(os.homedir(), "Documents", "Opiumware Workspace", "autoexec"),
+        folder: path.join(homeDir, "Documents", "Opiumware Workspace", "autoexec"),
       },
     ];
   }
@@ -176,6 +177,25 @@ function getAutoexecCandidates() {
   }
 
   return [];
+}
+
+export function resolveAutoexecHome(options = {}) {
+  const platform = options.platform || process.platform;
+  const homeDir = options.homeDir || os.homedir();
+  if (platform !== "darwin") return homeDir;
+
+  const sudoUser = options.sudoUser ?? process.env.SUDO_USER;
+  if (
+    typeof sudoUser !== "string"
+    || sudoUser === "root"
+    || !/^[a-z0-9._-]+$/i.test(sudoUser)
+  ) {
+    return homeDir;
+  }
+
+  const candidate = path.join(options.usersRoot || "/Users", sudoUser);
+  const exists = options.folderExists || folderExists;
+  return exists(candidate) ? candidate : homeDir;
 }
 
 function folderExists(folder) {

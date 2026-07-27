@@ -1,10 +1,9 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import type { IncomingMessage, ServerResponse } from "http";
+import { SERVER_ROOT } from "../../config.js";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const CONNECTOR_PATH = path.resolve(__dirname, "../../../connector.luau");
+const CONNECTOR_PATH = path.join(SERVER_ROOT, "connector.luau");
 
 export async function GET(_req: IncomingMessage, res: ServerResponse): Promise<void> {
   try {

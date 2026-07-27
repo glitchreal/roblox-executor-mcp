@@ -836,56 +836,56 @@ return b end function a.h():typeof(__modImpl())local b=a.cache.h if not b then b
 
 local b={}
 b.__index=b
-local c=warn or print
 
-function b.new(d,e)
+
+function b.new(c,d)
 return setmetatable({
-pipeline=d,
-failedResync=e,
+pipeline=c,
+failedResync=d,
 },b)
 end
 
-function b.Publish(d)
-d.pipeline.statusDirty=true
+function b.Publish(c)
+c.pipeline.statusDirty=true
 end
 
-function b.MarkMapped(d,e,f)
-local g=d.pipeline
-local h=g.jobs[e]
+function b.MarkMapped(c,d,e)
+local f=c.pipeline
+local g=f.jobs[d]
+if g and(g.state=="mapped"or g.state=="failed"or g.state=="removed")then
+return false
+end
+
+if not g then
+g=f:EnsureJob(d)
+end
+
+f:SetJobState(g,"mapped")
+if c.failedResync then c.failedResync:Cancel(g)end
+g.prepared=nil
+g.script=nil
+if e~=false then c:Publish()end
+return true
+end
+
+function b.MarkFailed(c,d,e,f)
+local g=c.pipeline
+local h=g.jobs[d]
 if h and(h.state=="mapped"or h.state=="failed"or h.state=="removed")then
 return false
 end
 
 if not h then
-h=g:EnsureJob(e)
+h=g:EnsureJob(d)
 end
 
-g:SetJobState(h,"mapped")
-if d.failedResync then d.failedResync:Cancel(h)end
+g:SetJobState(h,"failed")
+if c.failedResync then c.failedResync:Schedule(h)end
+h.errorMessage=tostring(e or"unknown error")
 h.prepared=nil
 h.script=nil
-if f~=false then d:Publish()end
-return true
-end
 
-function b.MarkFailed(d,e,f,g)
-local h=d.pipeline
-local i=h.jobs[e]
-if i and(i.state=="mapped"or i.state=="failed"or i.state=="removed")then
-return false
-end
-
-if not i then
-i=h:EnsureJob(e)
-end
-
-h:SetJobState(i,"failed")
-if d.failedResync then d.failedResync:Schedule(i)end
-i.errorMessage=tostring(f or"unknown error")
-i.prepared=nil
-i.script=nil
-c("[Roblox Executor MCP] Script mapping skipped "..tostring(e)..": "..tostring(f or"unknown error"))
-if g~=false then d:Publish()end
+if f~=false then c:Publish()end
 return true
 end
 
@@ -1897,7 +1897,7 @@ return E
 end
 
 for F,G in game:QueryDescendants"LuaSourceContainer"do
-if G:IsA"Script"and G.RunContext==Enum.RunContext.Server then continue end
+if G.ClassName=="Script"and G.RunContext~=Enum.RunContext.Client then continue end
 if G:GetDebugId()~=D then continue end
 
 c.instances[D]=G
@@ -1907,7 +1907,7 @@ end
 for F,G in j()do
 if not G:IsA"LuaSourceContainer"then continue end
 
-if G:IsA"Script"and G.RunContext~=Enum.RunContext.Client then continue end
+if G.ClassName=="Script"and G.RunContext~=Enum.RunContext.Client then continue end
 if G:GetDebugId()~=D then continue end
 
 c.instances[D]=G
@@ -1953,7 +1953,7 @@ end
 
 local function IsCandidateScriptForMapping(D)
 local E=(
-D:IsA"Script"and(
+D.ClassName=="Script"and(
 D.RunContext==Enum.RunContext.Server or
 D.RunContext==Enum.RunContext.Legacy
 )
@@ -2277,7 +2277,10 @@ j=loadstring(h.source)()
 
 assert(typeof(j)=="Instance","Script instance is not an instance.")
 assert(j:IsA"LuaSourceContainer","Script instance is not a LuaSourceContainer (Script, LocalScript, or ModuleScript).")
-assert(not(j:IsA"Script"and j.RunContext==Enum.RunContext.Server),"Script instance is a Server Script.")
+assert(not(
+j.ClassName=="Script"and
+j.RunContext~=Enum.RunContext.Client
+),"Script instance is a server-only Script.")
 end
 
 local k

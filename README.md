@@ -25,7 +25,6 @@ Use it to see connected Roblox clients, inspect scripts, run tools, view server 
 - **GUI Interaction** — Click buttons and type into text boxes.
 - **Screenshot** — Capture Roblox window screenshots (Windows only).
 - **Multi-Client** — Connect multiple Roblox clients at once.
-- **Primary / Secondary** — Multiple MCP instances auto-coordinate with automatic promotion. Supports remote relaying via `--baseurl`. See [Advanced](docs/advanced.md).
 
 ## Tutorial
 
@@ -46,21 +45,31 @@ git clone https://github.com/notpoiu/roblox-executor-mcp.git
 cd roblox-executor-mcp
 ```
 
-### 2. Run the harness installer
+### 2. Run the installer
 
-The installer builds the server, lets you choose AI clients, writes supported MCP configs, and prints the Roblox loader script.
+The installer opens a guided browser setup. It builds the server, configures selected AI harnesses, optionally installs the packaged Roblox MCP skill and Roblox connector, and can register the shared server to run in the background with your computer.
 
 ```bash
 npm run install:harnesses
 ```
 
-The normal server build consumes the committed `connector.luau` artifact, so harness installs do not require Darklua. Connector developers can install the pinned tool with `rokit install`, edit `connector-src/`, and regenerate the artifact with `npm run build:connector`.
+The browser opens with a one-time secure installer link. Keep the terminal open until setup finishes. The normal server build consumes the committed `connector.luau` artifact, so installs do not require Darklua. Connector developers can install the pinned tool with `rokit install`, edit `connector-src/`, and regenerate the artifact with `npm run build:connector`.
 
-The picker is built with [OpenTUI](https://opentui.com/) and runs through Bun. `npm run install:harnesses` installs Bun first if it is not already available. It shows detected local clients by default; if none are detected, it warns you to install a harness first. Press `s` in the picker or pass `--show-all-harnesses` to reveal every supported config target. If your terminal has trouble with the interactive picker, use the plain numbered prompt:
+For a terminal-only setup, use the explicit CLI installer. The CLI picker is built with [OpenTUI](https://opentui.com/) and runs through Bun:
 
 ```bash
-npm run install:harnesses -- --plain
+npm run install:harnesses:cli
 ```
+
+If the interactive terminal picker is unavailable, add `-- --plain`. Press `s` in the picker or pass `-- --show-all-harnesses` to reveal every supported config target. After writing configs, both installers can automatically restart supported GUI harnesses that are currently running. CLI-only harness sessions still receive a restart instruction when they cannot be relaunched safely.
+
+To explore the browser flow without changing configs, installing packages, registering a service, or restarting harnesses, run:
+
+```bash
+npm run install:harnesses:preview
+```
+
+Pass `-- --no-open` to either browser command to start it without opening a browser. Pass `-- --host 0.0.0.0` to access it from another device over your LAN or Tailscale; use the complete tokenized URL printed by the installer.
 
 The installer can also place the Roblox loader into a detected executor autoexec folder, such as MacSploit on macOS or supported Windows executor autoexec folders. Use the prompt, or run:
 
@@ -81,7 +90,9 @@ To update an existing install later, run:
 npm run update
 ```
 
-The update command can stop currently running MCP server processes, optionally pull latest changes, and always rebuilds the server.
+You can also open **Dashboard → Settings → Server updates** and select **Update now**. From a clean MCP Server Git checkout, the dashboard updater fetches the configured tracking branch into a detached worktree, builds and health-checks an immutable versioned release, rechecks that the checkout was not edited, and activates it through one atomic release pointer before restarting the persistent core. Existing stdio adapters stay alive and reconnect automatically. An incomplete release is never made active; if final startup fails, both the checkout and pointer return to the previous release. Packaged installations without their own Git metadata show this control as unavailable and should update through their package manager.
+
+The terminal update command automatically stops a same-checkout legacy monolithic server during the one-time adapter migration. After that, it stages and health-checks the rebuilt core, atomically replaces the active runtime, and restores the previous version if final startup fails.
 
 ### Manual setup
 

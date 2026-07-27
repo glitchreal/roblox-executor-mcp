@@ -1,12 +1,12 @@
 # Advanced Configuration
 
-## Primary / Secondary Mode
+## Shared Core and Remote Mode
 
-By default, the server starts as a **primary** on port `16384`. If that port is already in use, it automatically becomes a **secondary** that relays all tool calls through the primary. When the primary disconnects, a secondary will promote itself automatically.
+By default, each AI harness starts a small stdio adapter. The first adapter starts one persistent background core on port `16384`; every other adapter connects to that same core. The core owns the Roblox bridge, dashboard, decompiler processes, and MCP tool sessions.
 
 ### Remote primary (`--baseurl`)
 
-If your AI client runs on macOS/Linux but Roblox is on a Windows machine, you can relay through a remote primary:
+If your AI client runs on macOS/Linux but Roblox is on a Windows machine, its stdio adapter can connect directly to the Windows background core:
 
 ```json
 {
@@ -27,11 +27,11 @@ If your AI client runs on macOS/Linux but Roblox is on a Windows machine, you ca
 
 | Scenario | Result |
 |---|---|
-| Remote reachable | Secondary relay to remote host |
-| Remote unreachable | Falls back to primary locally |
-| Remote unreachable + local port taken | Secondary to local primary |
+| Remote reachable | Adapter connects to the remote background core |
+| Remote unreachable | Adapter falls back to the local background core |
+| Local core already running | Adapter reuses the existing local core |
 
-> `screenshot-window` and `list-roblox-windows` are forwarded over HTTP to the primary, so a Mac secondary can capture windows on a Windows primary.
+Because tools execute in the selected background core, `screenshot-window` and `list-roblox-windows` run on the remote Windows host when `--baseurl` is connected.
 
 ## Connector Options
 

@@ -5,7 +5,7 @@ export const LOCAL_ADMIN_HEADER = "x-roblox-mcp-admin-token";
 
 const localAdminToken = crypto.randomBytes(32).toString("base64url");
 
-function isLoopbackAddress(address: string | undefined): boolean {
+export function isLoopbackAddress(address: string | undefined): boolean {
   const normalized = address?.replace(/^\[|\]$/g, "");
   return (
     normalized === "127.0.0.1" ||

@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { spawn, spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import fsSync from "node:fs";
 import os from "node:os";
@@ -15,6 +16,20 @@ import {
   getDetectedAutoexecTargets,
   writeLoaderToAutoexec,
 } from "../src/shared/autoexec.mjs";
+import { findInstallationRuntimeProcesses } from "../src/shared/process-discovery.mjs";
+import {
+  acquireUpdateLock,
+  releaseUpdateLock,
+} from "../src/shared/update-status.mjs";
+import { activateCheckoutRuntime } from "./terminal-update-runtime.mjs";
+import {
+  legacyServerRequiresShutdown,
+  waitForLegacyServerShutdown,
+} from "./legacy-runtime-migration.mjs";
+import {
+  prepareCheckoutRollback,
+  removeCheckoutSnapshot,
+} from "./terminal-update-snapshot.mjs";
 
 const DEFAULT_SERVER_NAME = "roblox-mcp";
 const MAIN_REPO_URL = "https://github.com/notpoiu/roblox-executor-mcp.git";
@@ -70,6 +85,12 @@ const ALL_HARNESSES = [
 ];
 
 const HARNESS_RESTART_SPECS = {
+  codex: {
+    key: "codex",
+    label: "Codex",
+    macApps: ["ChatGPT", "Codex"],
+    processNames: ["ChatGPT", "Codex"],
+  },
   antigravity: {
     key: "antigravity",
     label: "Antigravity",
@@ -131,7 +152,9 @@ const HARNESS_RESTART_SPECS = {
 const EXPLICIT_HARNESS_IDS = parseHarnessIds(getArgValue("--harnesses"));
 const LIST_HARNESSES_MODE = process.argv.includes("--list-harnesses-json");
 const INSTALL_ONLY_MODE = process.argv.includes("--install-only");
+const RESTART_ONLY_MODE = process.argv.includes("--restart-harnesses-only");
 const JSON_RESULT_MODE = process.argv.includes("--json-result");
+const SKIP_HARNESS_RESTART = process.argv.includes("--no-restart-harnesses");
 const NON_INTERACTIVE = process.argv.includes("--yes") || process.argv.includes("-y") || EXPLICIT_HARNESS_IDS.length > 0;
 const DRY_RUN = process.argv.includes("--dry-run");
 const UPDATE_MODE = process.argv.includes("--update");
@@ -143,7 +166,8 @@ const PLAIN_MODE = process.argv.includes("--plain");
 const NO_OPENTUI = process.argv.includes("--no-opentui");
 let OPEN_TUI_DISABLED = false;
 const SHOW_ALL_HARNESSES = process.argv.includes("--show-all-harnesses") || process.argv.includes("--all-harnesses");
-const AUTOEXEC_MODE = process.argv.includes("--autoexec");
+const AUTOEXEC_TARGET_IDS = parseHarnessIds(getArgValue("--autoexec-targets"));
+const AUTOEXEC_MODE = process.argv.includes("--autoexec") || AUTOEXEC_TARGET_IDS.length > 0;
 installSafeTerminalWrites();
 const HARNESS_AVAILABILITY = detectAvailableHarnesses();
 if (PLAIN_MODE || process.env.NO_COLOR) {
@@ -161,12 +185,21 @@ async function main() {
   if (LIST_HARNESSES_MODE) {
     console.log(JSON.stringify(ALL_HARNESSES.filter((harness) => harness.id !== "manual").map((harness) => {
       const availability = HARNESS_AVAILABILITY.get(harness.id) || { detected: false, reason: "" };
+      const restartSpec = HARNESS_RESTART_SPECS[harness.id];
+      const manualRestartRequired =
+        harness.id === "codex" && interactiveCodexCliIsRunning();
+      const restartTarget =
+        restartSpec && !manualRestartRequired ? detectRestartTarget(restartSpec) : null;
       return {
         id: harness.id,
         name: harness.name,
         group: harness.group,
         detected: availability.detected === true,
         reason: availability.reason || "",
+        restartable: Boolean(restartSpec) && !manualRestartRequired,
+        running: Boolean(restartTarget),
+        restartLabel: restartSpec?.label || null,
+        manualRestartRequired,
       };
     })));
     return;
@@ -185,6 +218,12 @@ async function main() {
   const unknownHarnessIds = EXPLICIT_HARNESS_IDS.filter((id) => !ALL_HARNESSES.some((harness) => harness.id === id && id !== "manual"));
   if (unknownHarnessIds.length) {
     throw new Error(`Unknown harness${unknownHarnessIds.length === 1 ? "" : "es"}: ${unknownHarnessIds.join(", ")}`);
+  }
+  if (RESTART_ONLY_MODE) {
+    await restartHarnessesOnly(
+      ALL_HARNESSES.filter((harness) => EXPLICIT_HARNESS_IDS.includes(harness.id))
+    );
+    return;
   }
   if (INSTALL_ONLY_MODE && !EXPLICIT_HARNESS_IDS.length) {
     throw new Error("--install-only requires at least one harness via --harnesses.");
@@ -301,6 +340,26 @@ async function main() {
   const doneText = restartedHarnesses || selectedHarnesses.length === 0
     ? "Connect Roblox with:"
     : `Restart ${restartList}, then connect Roblox with:`;
+  if (JSON_RESULT_MODE) {
+    const harnessResults = selectedHarnesses.map((harness) => {
+      const result = results.find((item) => item.message.startsWith(`${harness.name}:`));
+      return {
+        id: harness.id,
+        name: harness.name,
+        ok: result?.status === "ok",
+        error: result?.status === "ok"
+          ? null
+          : result?.message.replace(`${harness.name}:`, "").trim() || "Configuration failed.",
+      };
+    });
+    console.log(`HARNESS_RESULT_JSON=${JSON.stringify({ harnesses: harnessResults })}`);
+    if (harnessResults.some((result) => !result.ok)) {
+      process.exitCode = 1;
+      console.log(`\n${colors.red}Install incomplete.${colors.reset} Review the harness errors above.`);
+      showCursor();
+      return;
+    }
+  }
   console.log(`\n${colors.green}Done.${colors.reset} ${doneText}`);
   const loaderSnippet = buildLoaderSnippet(crossMachine?.bridgeUrl);
   console.log(`${colors.cyan}${loaderSnippet}${colors.reset}`);
@@ -347,11 +406,18 @@ async function maybeInstallAutoexec(loaderSnippet) {
   const shouldInstall = AUTOEXEC_MODE || await askYesNo(`Install Roblox loader into autoexec (${targetText})`, false);
   if (!shouldInstall) return;
 
-  const selectedTargets = AUTOEXEC_MODE ? targets : await selectAutoexecTargets(targets);
+  const selectedTargets = AUTOEXEC_TARGET_IDS.length > 0
+    ? selectExplicitAutoexecTargets(targets)
+    : AUTOEXEC_MODE
+      ? targets
+      : await selectAutoexecTargets(targets);
   if (!selectedTargets.length) return;
 
   const result = await writeLoaderToAutoexec(loaderSnippet, { targets: selectedTargets, dryRun: DRY_RUN });
   if (!result.ok) {
+    if (AUTOEXEC_TARGET_IDS.length > 0) {
+      throw new Error(result.error || "Could not write the selected autoexec script.");
+    }
     log("warn", result.error || "Could not write autoexec script.");
     return;
   }
@@ -361,6 +427,16 @@ async function maybeInstallAutoexec(loaderSnippet) {
     const previousText = previousPath && previousPath !== filePath ? ` (existing connector detected at ${shrinkHome(previousPath)})` : "";
     log(DRY_RUN ? "dry" : "ok", `${DRY_RUN ? "Would write" : "Wrote"} autoexec loader to ${shrinkHome(filePath)}${previousText}`);
   }
+}
+
+function selectExplicitAutoexecTargets(targets) {
+  const selected = targets.filter((target) => AUTOEXEC_TARGET_IDS.includes(target.id));
+  const selectedIds = new Set(selected.map((target) => target.id));
+  const missing = AUTOEXEC_TARGET_IDS.filter((id) => !selectedIds.has(id));
+  if (missing.length) {
+    throw new Error(`Unknown or unavailable autoexec target${missing.length === 1 ? "" : "s"}: ${missing.join(", ")}`);
+  }
+  return selected;
 }
 
 async function selectAutoexecTargets(targets) {
@@ -750,29 +826,63 @@ async function promptForGetScriptBridgeUrl() {
 async function runUpdateMode() {
   const serverRoot = path.resolve(CURRENT_REPO_DIR);
   const results = [];
+  const lockRunId = randomUUID();
+  const commandToken = path.basename(process.argv[1] || "");
 
   section("Update");
   log("info", `Using current repository: ${serverRoot}`);
   await ensureUpdateGitReady(serverRoot, results);
+  if (!DRY_RUN) await acquireUpdateLock(lockRunId, { commandToken });
 
-  const processes = findMcpServerProcesses(serverRoot);
+  try {
+  let legacyMigration = false;
+  const processes = findInstallationRuntimeProcesses(serverRoot);
   if (processes.length) {
     console.log(`${colors.yellow}Found ${processes.length} running MCP server process(es):${colors.reset}`);
     for (const proc of processes) {
       console.log(`${colors.gray}${String(proc.pid).padStart(6)}${colors.reset} ${proc.command}`);
     }
-    const shouldKill =
-      !NON_INTERACTIVE && (await askYesNo("Kill running MCP server processes before updating", false));
-    if (shouldKill) {
-      killProcesses(processes, results);
+    const corePort = Number(process.env.ROBLOX_MCP_PORT) || SERVER_PORT;
+    if (await legacyServerRequiresShutdown(corePort)) {
+      legacyMigration = true;
+      const legacyProcesses = processes.filter((item) =>
+        item.command.replace(/\\/g, "/").includes("dist/index.js")
+      );
+      log(
+        "info",
+        "Stopping this checkout's legacy server/adapters before the architecture upgrade"
+      );
+      killProcesses(legacyProcesses, results);
+      if (DRY_RUN) {
+        results.push({
+          status: "dry",
+          message: "Would wait for the legacy server to release the MCP port",
+        });
+      } else {
+        await waitForLegacyServerShutdown(corePort);
+      }
     } else {
-      results.push({
-        status: "warn",
-        message: "Running MCP server processes were left alive. Restart clients after updating so they use the new build.",
-      });
+      log(
+        "info",
+        "The background core will be replaced atomically after the rebuild"
+      );
     }
   } else {
     log("skip", "No running MCP server processes found.");
+  }
+
+  const snapshot = await prepareCheckoutRollback(serverRoot, {
+    legacyMigration,
+    dryRun: DRY_RUN,
+    runId: lockRunId,
+  });
+  if (snapshot.created) {
+    results.push({
+      status: DRY_RUN ? "dry" : "ok",
+      message: `${
+        DRY_RUN ? "Would preserve" : "Preserved"
+      } the current checkout runtime for rollback`,
+    });
   }
 
   const shouldPull =
@@ -784,12 +894,41 @@ async function runUpdateMode() {
   }
 
   await installServer(serverRoot, results, { announceRepo: false });
+  await activateCheckoutBuild(serverRoot, results, lockRunId);
+  if (!DRY_RUN) await removeCheckoutSnapshot(serverRoot, snapshot);
 
   section("Summary");
   for (const item of results) {
     log(item.status, item.message);
   }
   showCursor();
+  } finally {
+    if (!DRY_RUN) await releaseUpdateLock(lockRunId).catch(() => undefined);
+  }
+}
+
+async function activateCheckoutBuild(serverRoot, results, lockRunId = null) {
+  const { pointerPath, coreProcesses } = await activateCheckoutRuntime(serverRoot, {
+    dryRun: DRY_RUN,
+    lockRunId,
+  });
+  if (DRY_RUN) {
+    results.push({
+      status: "dry",
+      message: `Would activate the checkout build by clearing ${pointerPath}`,
+    });
+  } else {
+    results.push({ status: "ok", message: "Activated the rebuilt checkout runtime" });
+  }
+
+  if (coreProcesses.length) {
+    results.push({
+      status: DRY_RUN ? "dry" : "ok",
+      message: DRY_RUN
+        ? `Would restart ${coreProcesses.length} background core process(es)`
+        : "Restarted the background core; adapters will reconnect automatically",
+    });
+  }
 }
 
 async function installServer(serverRoot, results, options = {}) {
@@ -1048,60 +1187,6 @@ async function setGitOrigin(serverRoot, replaceExisting, results) {
     status: DRY_RUN ? "dry" : "ok",
     message: `${DRY_RUN ? "Would set git origin" : "Git origin set"} to ${MAIN_REPO_URL}`,
   });
-}
-
-function findMcpServerProcesses(serverRoot) {
-  const serverEntry = path.join(serverRoot, "dist", "index.js");
-  const normalizedEntry = normalizeProcessPath(serverEntry);
-  const normalizedRoot = normalizeProcessPath(serverRoot);
-
-  if (process.platform === "win32") {
-    const script = [
-      "$ErrorActionPreference = 'SilentlyContinue';",
-      "Get-CimInstance Win32_Process |",
-      "Where-Object { $_.CommandLine -and ($_.CommandLine -like '*dist/index.js*' -or $_.CommandLine -like '*dist\\\\index.js*') } |",
-      "ForEach-Object { [PSCustomObject]@{ ProcessId = $_.ProcessId; CommandLine = $_.CommandLine } } |",
-      "ConvertTo-Json -Compress",
-    ].join(" ");
-    const result = spawnSync("powershell.exe", ["-NoProfile", "-Command", script], {
-      encoding: "utf8",
-      windowsHide: true,
-    });
-    if (result.status !== 0 || !result.stdout.trim()) return [];
-    try {
-      const parsed = JSON.parse(result.stdout);
-      const rows = Array.isArray(parsed) ? parsed : [parsed];
-      return rows
-        .map((row) => ({ pid: Number(row.ProcessId), command: String(row.CommandLine || "") }))
-        .filter((row) => isMatchingMcpProcess(row, normalizedEntry, normalizedRoot));
-    } catch {
-      return [];
-    }
-  }
-
-  const result = spawnSync("ps", ["-axo", "pid=,command="], { encoding: "utf8" });
-  if (result.status !== 0) return [];
-  return result.stdout
-    .split(/\r?\n/)
-    .map((line) => {
-      const match = line.trim().match(/^(\d+)\s+(.+)$/);
-      return match ? { pid: Number(match[1]), command: match[2] } : null;
-    })
-    .filter(Boolean)
-    .filter((row) => isMatchingMcpProcess(row, normalizedEntry, normalizedRoot));
-}
-
-function isMatchingMcpProcess(proc, normalizedEntry, normalizedRoot) {
-  if (!proc || !Number.isInteger(proc.pid) || proc.pid === process.pid) return false;
-  const command = normalizeProcessPath(proc.command);
-  return (
-    command.includes(normalizedEntry) ||
-    (command.includes("dist/index.js") && command.includes(normalizedRoot))
-  );
-}
-
-function normalizeProcessPath(value) {
-  return String(value || "").replace(/\\/g, "/");
 }
 
 function killProcesses(processes, results) {
@@ -1453,21 +1538,49 @@ async function configureHarness(harness, serverEntry, results) {
 }
 
 async function maybeRestartHarnesses(selectedHarnesses, results) {
-  if (INSTALL_ONLY_MODE || NON_INTERACTIVE || !selectedHarnesses.length) return;
+  // The install-only mode is invoked by an already-running dashboard server. Restarting
+  // its host harness here could terminate the HTTP request before it returns.
+  if (INSTALL_ONLY_MODE || !selectedHarnesses.length) return;
 
-  const restartable = findRestartableHarnesses(selectedHarnesses);
+  const configuredHarnesses = selectedHarnesses.filter((harness) =>
+    results.some((result) =>
+      result.status === "ok" && result.message.startsWith(`${harness.name}: configured`)
+    )
+  );
+  if (!configuredHarnesses.length) return;
+
+  const restartable = findRestartableHarnesses(configuredHarnesses);
   if (!restartable.length) return;
 
   section("Restart Harnesses");
   const names = restartable.map((target) => target.label).join(", ");
-  const shouldRestart = await askYesNo(`Restart running harnesses now (${names})`, false);
-  if (!shouldRestart) {
-    results.push({ status: "skip", message: `Harness restart skipped (${names})` });
+  if (SKIP_HARNESS_RESTART) {
+    results.push({ status: "skip", message: `Automatic harness restart disabled (${names})` });
     return;
   }
 
+  log("info", `Restarting running harnesses automatically: ${names}`);
   for (const target of restartable) {
-    restartHarnessTarget(target, results);
+    await restartHarnessTarget(target, results);
+  }
+}
+
+async function restartHarnessesOnly(selectedHarnesses) {
+  if (!selectedHarnesses.length) return;
+  const results = [];
+  const targets = findRestartableHarnesses(selectedHarnesses);
+  for (const target of targets) {
+    await restartHarnessTarget(target, results);
+  }
+  if (JSON_RESULT_MODE) {
+    console.log(`HARNESS_RESULT_JSON=${JSON.stringify({
+      restarted: results
+        .filter((item) => item.status === "ok" && /: restarted$/.test(item.message))
+        .map((item) => item.message.replace(/: restarted$/, "")),
+      failed: results
+        .filter((item) => item.status === "warn")
+        .map((item) => item.message),
+    })}`);
   }
 }
 
@@ -1477,6 +1590,7 @@ function findRestartableHarnesses(selectedHarnesses) {
   for (const harness of selectedHarnesses) {
     const spec = HARNESS_RESTART_SPECS[harness.id];
     if (!spec || seen.has(spec.key)) continue;
+    if (harness.id === "codex" && interactiveCodexCliIsRunning()) continue;
     const target = detectRestartTarget(spec);
     if (!target) continue;
     seen.add(spec.key);
@@ -1492,9 +1606,20 @@ function detectRestartTarget(spec) {
 }
 
 function detectMacRestartTarget(spec) {
-  if (!spec.macApp || !macAppIsRunning(spec.macApp)) return null;
+  const appNames = [...(spec.macApps || []), spec.macApp].filter(Boolean);
+  const processName = [...(spec.processNames || []), ...appNames]
+    .filter((candidate, index, values) => values.indexOf(candidate) === index)
+    .find((candidate) => macProcessIsRunning(candidate));
+  if (!processName) return null;
+
+  const appName = spec.macApp
+    || appNames.find((candidate) => candidate === processName)
+    || appNames[0];
+  if (!appName) return null;
   return {
     ...spec,
+    macApp: appName,
+    macProcess: processName,
     mode: "mac-app",
   };
 }
@@ -1525,14 +1650,14 @@ function detectUnixRestartTarget(spec) {
   };
 }
 
-function restartHarnessTarget(target, results) {
+async function restartHarnessTarget(target, results) {
   if (DRY_RUN) {
     results.push({ status: "dry", message: `Would restart ${target.label}` });
     return;
   }
 
   try {
-    if (target.mode === "mac-app") restartMacApp(target.macApp);
+    if (target.mode === "mac-app") await restartMacApp(target.macApp, target.macProcess);
     else if (target.mode === "windows-process") restartWindowsProcess(target);
     else if (target.mode === "unix-command") restartUnixProcess(target);
     else throw new Error(`unsupported restart mode ${target.mode}`);
@@ -1542,15 +1667,21 @@ function restartHarnessTarget(target, results) {
   }
 }
 
-function restartMacApp(appName) {
-  const quit = spawnSync("osascript", ["-e", `tell application "${escapeAppleScript(appName)}" to quit`], {
+async function restartMacApp(appName, processName) {
+  // Reaching this path means the user explicitly chose automatic restart.
+  // A normal AppleScript quit can open a confirmation dialog (notably when
+  // Codex/ChatGPT has active threads), leaving the detached restart worker
+  // blocked forever. Kill only the exact selected app process instead.
+  const stop = spawnSync("/usr/bin/killall", ["-KILL", "-q", "-c", processName], {
     encoding: "utf8",
     stdio: "pipe",
     shell: false,
   });
-  if (quit.status !== 0) {
-    throw new Error((quit.stderr || quit.stdout || `osascript exited ${quit.status}`).trim());
+  if (stop.status !== 0 && stop.status !== 1) {
+    throw new Error((stop.stderr || stop.stdout || `killall exited ${stop.status}`).trim());
   }
+  await waitForMacProcessState(processName, false, 15_000);
+
   const open = spawnSync("open", ["-a", appName], {
     encoding: "utf8",
     stdio: "pipe",
@@ -1559,6 +1690,21 @@ function restartMacApp(appName) {
   if (open.status !== 0) {
     throw new Error((open.stderr || open.stdout || `open exited ${open.status}`).trim());
   }
+  await waitForMacProcessState(processName, true, 15_000);
+}
+
+async function waitForMacProcessState(processName, expectedRunning, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  do {
+    if (macProcessIsRunning(processName) === expectedRunning) return;
+    await new Promise((resolve) => setTimeout(resolve, 150));
+  } while (Date.now() < deadline);
+
+  throw new Error(
+    expectedRunning
+      ? `${processName} did not reopen within ${Math.round(timeoutMs / 1000)} seconds`
+      : `${processName} did not finish quitting within ${Math.round(timeoutMs / 1000)} seconds`
+  );
 }
 
 function restartWindowsProcess(target) {
@@ -1609,13 +1755,41 @@ function findRestartLauncher(spec) {
   return null;
 }
 
-function macAppIsRunning(appName) {
-  const result = spawnSync("osascript", ["-e", `application "${escapeAppleScript(appName)}" is running`], {
+function macProcessIsRunning(processName) {
+  const result = spawnSync("/usr/bin/killall", ["-s", "-q", "-c", processName], {
+    stdio: "ignore",
+    shell: false,
+  });
+  return result.status === 0;
+}
+
+function interactiveCodexCliIsRunning() {
+  if (process.platform === "win32") {
+    const script = [
+      "$process = Get-CimInstance Win32_Process -Filter \"Name = 'codex.exe'\" |",
+      "Where-Object { $_.CommandLine -and $_.CommandLine -notmatch '(^|\\s)app-server(\\s|$)' } |",
+      "Select-Object -First 1;",
+      "if ($process) { exit 0 } else { exit 1 }",
+    ].join(" ");
+    return spawnSync("powershell.exe", ["-NoProfile", "-Command", script], {
+      stdio: "ignore",
+      shell: false,
+    }).status === 0;
+  }
+
+  const result = spawnSync("ps", ["-axo", "tty=,command="], {
     encoding: "utf8",
     stdio: "pipe",
     shell: false,
   });
-  return result.status === 0 && result.stdout.trim() === "true";
+  if (result.status !== 0) return false;
+  return result.stdout.split(/\r?\n/).some((line) => {
+    const match = line.trim().match(/^(\S+)\s+(.+)$/);
+    if (!match || match[1] === "?" || match[1] === "??") return false;
+    const command = match[2];
+    if (/(?:^|\s)app-server(?:\s|$)/.test(command)) return false;
+    return /(?:^|\/)codex(?:\s|$)/.test(command);
+  });
 }
 
 function windowsProcessIsRunning(name) {

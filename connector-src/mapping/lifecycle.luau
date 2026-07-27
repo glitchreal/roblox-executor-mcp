@@ -210,7 +210,7 @@ local function GetScriptByDebugId(debugId)
     end
 
     for _, script in game:QueryDescendants("LuaSourceContainer") do
-        if script:IsA("Script") and script.RunContext == Enum.RunContext.Server then continue end
+        if script.ClassName == "Script" and script.RunContext ~= Enum.RunContext.Client then continue end
         if script:GetDebugId() ~= debugId then continue end
         
         ScriptMappingPipeline.instances[debugId] = script
@@ -220,7 +220,7 @@ local function GetScriptByDebugId(debugId)
     for _, script in getnilinstances() do
         if not script:IsA("LuaSourceContainer") then continue end
 
-        if script:IsA("Script") and script.RunContext ~= Enum.RunContext.Client then continue end
+        if script.ClassName == "Script" and script.RunContext ~= Enum.RunContext.Client then continue end
         if script:GetDebugId() ~= debugId then continue end
         
         ScriptMappingPipeline.instances[debugId] = script
@@ -266,7 +266,7 @@ end
 
 local function IsCandidateScriptForMapping(script)
     local IsServerScript = (
-        script:IsA("Script") and (
+        script.ClassName == "Script" and (
             script.RunContext == Enum.RunContext.Server or
             script.RunContext == Enum.RunContext.Legacy
         )

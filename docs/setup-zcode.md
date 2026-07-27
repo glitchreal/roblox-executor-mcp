@@ -7,7 +7,7 @@ ZCode reads user-level MCP servers from `~/.zcode/cli/config.json` under `mcp.se
 Run the installer, reveal all harnesses if ZCode was not detected automatically, and select **ZCode**:
 
 ```bash
-npm run install:harnesses -- --show-all-harnesses
+npm run install:harnesses:cli -- --show-all-harnesses
 ```
 
 The generated configuration has this shape:

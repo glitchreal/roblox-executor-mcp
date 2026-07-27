@@ -48,7 +48,7 @@ function JobStatus:MarkFailed(debugId, errorMessage, shouldPublish)
     job.errorMessage = tostring(errorMessage or "unknown error")
     job.prepared = nil
     job.script = nil
-    emitWarning("[Roblox Executor MCP] Script mapping skipped " .. tostring(debugId) .. ": " .. tostring(errorMessage or "unknown error"))
+    -- emitWarning("[Roblox Executor MCP] Script mapping skipped " .. tostring(debugId) .. ": " .. tostring(errorMessage or "unknown error"))
     if shouldPublish ~= false then self:Publish() end
     return true
 end

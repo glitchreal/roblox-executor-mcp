@@ -446,6 +446,55 @@
                 </div>
                 <div class="settings-card">
                     <div class="settings-card-body">
+                        <div class="settings-card-title">Start with your computer</div>
+                        <div class="settings-card-desc">Keep Roblox MCP available in the background after you close the dashboard.</div>
+                        <label class="settings-toggle-row" aria-label="Start Roblox MCP with your computer">
+                            <span class="toggle-switch">
+                                <input type="checkbox" id="settingsSystemStartup">
+                                <span class="toggle-track"><span class="toggle-thumb"></span></span>
+                            </span>
+                            <span>Enabled</span>
+                        </label>
+                    </div>
+                    <div class="settings-card-footer settings-card-footer--status">
+                        <span class="settings-card-footer-hint">Changes are saved automatically. Roblox MCP uses the native startup service for your computer.</span>
+                        <span class="settings-update-status settings-card-footer-status" id="settingsSystemStartupStatus" data-state="idle" role="status" aria-live="polite">Checking startup preference…</span>
+                    </div>
+                </div>
+                </section>
+
+                <div class="settings-header settings-header--section"><h2 class="settings-title">Installation</h2></div>
+                <section class="settings-section settings-section--spaced" aria-label="Installation settings">
+                <div class="settings-card settings-update-card">
+                    <div class="settings-card-body settings-update-row">
+                        <div class="settings-update-copy">
+                            <div class="settings-card-title">Server updates</div>
+                            <div class="settings-card-desc">Pull the latest version, rebuild the server, and restart the background core automatically.</div>
+                        </div>
+                        <button class="settings-test-btn settings-update-btn" id="settingsUpdateBtn" type="button">Update now</button>
+                    </div>
+                    <div class="settings-card-footer settings-card-footer--status">
+                        <span class="settings-update-status settings-card-footer-status" id="settingsUpdateStatus" data-state="idle" role="status" aria-live="polite">Checking update status…</span>
+                    </div>
+                </div>
+                <div class="settings-card">
+                    <div class="settings-card-body settings-update-row">
+                        <div class="settings-update-copy">
+                            <div class="settings-card-title">Roblox MCP skill</div>
+                            <div class="settings-card-desc">Install current tool guidance for compatible AI harnesses detected on this computer.</div>
+                        </div>
+                        <button class="settings-test-btn settings-control-button" id="settingsInstallSkillBtn" type="button" disabled>Install skill</button>
+                    </div>
+                    <div class="settings-card-footer settings-card-footer--status">
+                        <span class="settings-update-status settings-card-footer-status" id="settingsInstallSkillStatus" data-state="idle" role="status" aria-live="polite">Checking compatible harnesses…</span>
+                    </div>
+                </div>
+                </section>
+
+                <div class="settings-header settings-header--section"><h2 class="settings-title">Indexing</h2></div>
+                <section class="settings-section settings-section--spaced" aria-label="Indexing settings">
+                <div class="settings-card">
+                    <div class="settings-card-body">
                         <div class="settings-card-heading-row">
                             <div>
                                 <div class="settings-card-title">Decompiler fallbacks</div>
@@ -466,6 +515,7 @@
                     <div class="settings-card-footer"><span class="settings-card-footer-hint">Saved automatically to .roblox-mcp/decompiler-settings.json</span></div>
                 </div>
                 </section>
+
                 <div class="settings-header settings-header--section"><h2 class="settings-title">Semantic</h2></div>
                 <section class="settings-section" aria-label="Semantic settings">
                 <div class="settings-card">

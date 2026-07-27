@@ -38,6 +38,8 @@ const LOCAL_ADMIN_API_ROUTES = new Set([
   "/api/decompiler-settings/setup",
   "/api/semantic-settings",
   "/api/semantic-settings/test",
+  "/api/setup-settings",
+  "/api/update",
 ]);
 
 export function requiresLocalAdmin(req: IncomingMessage, pathname: string): boolean {

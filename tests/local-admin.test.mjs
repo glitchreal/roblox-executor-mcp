@@ -43,6 +43,7 @@ test("router protects dashboard mutations without blocking relay APIs", () => {
     "/api/decompiler-settings/setup",
     "/api/semantic-settings",
     "/api/semantic-settings/test",
+    "/api/update",
   ]) {
     assert.equal(requiresLocalAdmin({ method: "POST" }, pathname), true, `${pathname} must require dashboard authorization`);
   }
