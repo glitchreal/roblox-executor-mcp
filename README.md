@@ -90,9 +90,7 @@ To update an existing install later, run:
 npm run update
 ```
 
-You can also open **Dashboard → Settings → Server updates** and select **Update now**. From a clean MCP Server Git checkout, the dashboard updater fetches the configured tracking branch into a detached worktree, builds and health-checks an immutable versioned release, rechecks that the checkout was not edited, and activates it through one atomic release pointer before restarting the persistent core. Existing stdio adapters stay alive and reconnect automatically. An incomplete release is never made active; if final startup fails, both the checkout and pointer return to the previous release. Packaged installations without their own Git metadata show this control as unavailable and should update through their package manager.
-
-The terminal update command automatically stops a same-checkout legacy monolithic server during the one-time adapter migration. After that, it stages and health-checks the rebuilt core, atomically replaces the active runtime, and restores the previous version if final startup fails.
+You can also open **Dashboard → Settings → Server updates** and select **Update now**.
 
 ### Manual setup
 

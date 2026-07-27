@@ -9,6 +9,7 @@
   },
   "files": [
     "dist",
+    "scripts/update.mjs",
     "connector.luau",
     "README.md",
     "skills"
@@ -32,7 +33,7 @@
     "getscript": "bun scripts/install-harnesses.mjs --get-script",
     "start": "node dist/index.js",
     "start:core": "node dist/core.js",
-    "update": "bun scripts/install-harnesses.mjs --update",
+    "update": "node scripts/update.mjs",
     "prepare": "bun run build"
   },
   "keywords": [],

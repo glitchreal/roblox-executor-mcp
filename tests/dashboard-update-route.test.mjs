@@ -100,9 +100,25 @@ test("update status recovers an orphaned active operation", async (t) => {
   assert.doesNotMatch(registered.stdout, /roblox-mcp-update-orphaned-run/);
 });
 
-test("the packed update endpoint explicitly disables non-Git installations", async (t) => {
+test("the packed update endpoint enables archive-backed updates without Git metadata", async (t) => {
   const destination = await fs.mkdtemp(path.join(os.tmpdir(), "roblox-mcp-pack-"));
-  t.after(() => fs.rm(destination, { recursive: true, force: true }));
+  const updateHome = await fs.mkdtemp(path.join(os.tmpdir(), "roblox-mcp-pack-home-"));
+  const previousHome = process.env.HOME;
+  const previousUserProfile = process.env.USERPROFILE;
+  const previousArchiveUrl = process.env.ROBLOX_MCP_UPDATE_ARCHIVE_URL;
+  process.env.HOME = updateHome;
+  process.env.USERPROFILE = updateHome;
+  process.env.ROBLOX_MCP_UPDATE_ARCHIVE_URL = "http://127.0.0.1:1/unavailable.tar.gz";
+  t.after(async () => {
+    if (previousHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousHome;
+    if (previousUserProfile === undefined) delete process.env.USERPROFILE;
+    else process.env.USERPROFILE = previousUserProfile;
+    if (previousArchiveUrl === undefined) delete process.env.ROBLOX_MCP_UPDATE_ARCHIVE_URL;
+    else process.env.ROBLOX_MCP_UPDATE_ARCHIVE_URL = previousArchiveUrl;
+    await fs.rm(destination, { recursive: true, force: true });
+    await fs.rm(updateHome, { recursive: true, force: true });
+  });
 
   const packed = spawnSync(
     "npm",
@@ -143,13 +159,28 @@ test("the packed update endpoint explicitly disables non-Git installations", asy
   await route.GET({}, getCapture.response);
   const getBody = JSON.parse(getCapture.capture.body);
   assert.equal(getCapture.capture.status, 200);
-  assert.equal(getBody.state, "unavailable");
-  assert.equal(getBody.available, false);
+  assert.equal(getBody.available, true);
+  assert.equal(getBody.source, "archive");
 
   const postCapture = responseCapture();
   await route.POST({}, postCapture.response);
-  assert.equal(postCapture.capture.status, 409);
-  assert.match(JSON.parse(postCapture.capture.body).error, /Git checkout/);
+  const postBody = JSON.parse(postCapture.capture.body);
+  assert.equal(postCapture.capture.status, 202);
+  assert.equal(postBody.source, "archive");
+
+  const statusPath = path.join(updateHome, ".roblox-mcp", "update-status.json");
+  let finalStatus = null;
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    try {
+      finalStatus = JSON.parse(await fs.readFile(statusPath, "utf8"));
+      if (finalStatus.state === "failed") break;
+    } catch {
+      // The detached worker has not written its first state yet.
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  assert.equal(finalStatus?.state, "failed");
+  assert.match(finalStatus?.message || "", /download|archive|update/i);
 });
 
 test("the standalone update worker rejects traversal without deleting the target", async (t) => {

@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 import { spawn, spawnSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import fsSync from "node:fs";
 import os from "node:os";
@@ -16,20 +15,6 @@ import {
   getDetectedAutoexecTargets,
   writeLoaderToAutoexec,
 } from "../src/shared/autoexec.mjs";
-import { findInstallationRuntimeProcesses } from "../src/shared/process-discovery.mjs";
-import {
-  acquireUpdateLock,
-  releaseUpdateLock,
-} from "../src/shared/update-status.mjs";
-import { activateCheckoutRuntime } from "./terminal-update-runtime.mjs";
-import {
-  legacyServerRequiresShutdown,
-  waitForLegacyServerShutdown,
-} from "./legacy-runtime-migration.mjs";
-import {
-  prepareCheckoutRollback,
-  removeCheckoutSnapshot,
-} from "./terminal-update-snapshot.mjs";
 
 const DEFAULT_SERVER_NAME = "roblox-mcp";
 const MAIN_REPO_URL = "https://github.com/notpoiu/roblox-executor-mcp.git";
@@ -824,111 +809,14 @@ async function promptForGetScriptBridgeUrl() {
 }
 
 async function runUpdateMode() {
-  const serverRoot = path.resolve(CURRENT_REPO_DIR);
-  const results = [];
-  const lockRunId = randomUUID();
-  const commandToken = path.basename(process.argv[1] || "");
-
-  section("Update");
-  log("info", `Using current repository: ${serverRoot}`);
-  await ensureUpdateGitReady(serverRoot, results);
-  if (!DRY_RUN) await acquireUpdateLock(lockRunId, { commandToken });
-
-  try {
-  let legacyMigration = false;
-  const processes = findInstallationRuntimeProcesses(serverRoot);
-  if (processes.length) {
-    console.log(`${colors.yellow}Found ${processes.length} running MCP server process(es):${colors.reset}`);
-    for (const proc of processes) {
-      console.log(`${colors.gray}${String(proc.pid).padStart(6)}${colors.reset} ${proc.command}`);
-    }
-    const corePort = Number(process.env.ROBLOX_MCP_PORT) || SERVER_PORT;
-    if (await legacyServerRequiresShutdown(corePort)) {
-      legacyMigration = true;
-      const legacyProcesses = processes.filter((item) =>
-        item.command.replace(/\\/g, "/").includes("dist/index.js")
-      );
-      log(
-        "info",
-        "Stopping this checkout's legacy server/adapters before the architecture upgrade"
-      );
-      killProcesses(legacyProcesses, results);
-      if (DRY_RUN) {
-        results.push({
-          status: "dry",
-          message: "Would wait for the legacy server to release the MCP port",
-        });
-      } else {
-        await waitForLegacyServerShutdown(corePort);
-      }
-    } else {
-      log(
-        "info",
-        "The background core will be replaced atomically after the rebuild"
-      );
-    }
-  } else {
-    log("skip", "No running MCP server processes found.");
+  const updateEntry = path.join(CURRENT_REPO_DIR, "scripts", "update.mjs");
+  if (!exists(updateEntry)) {
+    throw new Error(`The shared update entry is missing at ${updateEntry}.`);
   }
-
-  const snapshot = await prepareCheckoutRollback(serverRoot, {
-    legacyMigration,
-    dryRun: DRY_RUN,
-    runId: lockRunId,
+  await runForeground(process.execPath, [updateEntry], {
+    cwd: CURRENT_REPO_DIR,
+    label: "Running the shared Roblox MCP updater",
   });
-  if (snapshot.created) {
-    results.push({
-      status: DRY_RUN ? "dry" : "ok",
-      message: `${
-        DRY_RUN ? "Would preserve" : "Preserved"
-      } the current checkout runtime for rollback`,
-    });
-  }
-
-  const shouldPull =
-    !NON_INTERACTIVE && canPullLatest(serverRoot)
-      ? await askYesNo("Pull latest changes before rebuild", false)
-      : false;
-  if (shouldPull) {
-    await pullLatest(serverRoot, results);
-  }
-
-  await installServer(serverRoot, results, { announceRepo: false });
-  await activateCheckoutBuild(serverRoot, results, lockRunId);
-  if (!DRY_RUN) await removeCheckoutSnapshot(serverRoot, snapshot);
-
-  section("Summary");
-  for (const item of results) {
-    log(item.status, item.message);
-  }
-  showCursor();
-  } finally {
-    if (!DRY_RUN) await releaseUpdateLock(lockRunId).catch(() => undefined);
-  }
-}
-
-async function activateCheckoutBuild(serverRoot, results, lockRunId = null) {
-  const { pointerPath, coreProcesses } = await activateCheckoutRuntime(serverRoot, {
-    dryRun: DRY_RUN,
-    lockRunId,
-  });
-  if (DRY_RUN) {
-    results.push({
-      status: "dry",
-      message: `Would activate the checkout build by clearing ${pointerPath}`,
-    });
-  } else {
-    results.push({ status: "ok", message: "Activated the rebuilt checkout runtime" });
-  }
-
-  if (coreProcesses.length) {
-    results.push({
-      status: DRY_RUN ? "dry" : "ok",
-      message: DRY_RUN
-        ? `Would restart ${coreProcesses.length} background core process(es)`
-        : "Restarted the background core; adapters will reconnect automatically",
-    });
-  }
 }
 
 async function installServer(serverRoot, results, options = {}) {

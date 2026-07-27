@@ -30,8 +30,8 @@ function json(res: ServerResponse, status: number, body: unknown): void {
   res.end(JSON.stringify(body));
 }
 
-function hasGitCheckout(): boolean {
-  if (!fs.existsSync(WORKER_PATH)) return false;
+function updateSourceKind(): "git" | "archive" | null {
+  if (!fs.existsSync(WORKER_PATH)) return null;
   const result = spawnSync(
     "git",
     ["rev-parse", "--show-toplevel"],
@@ -41,14 +41,14 @@ function hasGitCheckout(): boolean {
       windowsHide: true,
     }
   );
-  if (result.status !== 0) return false;
+  if (result.status !== 0) return "archive";
   try {
     return (
       fs.realpathSync.native(result.stdout.trim()) ===
       fs.realpathSync.native(REPO_ROOT)
-    );
+    ) ? "git" : "archive";
   } catch {
-    return false;
+    return "archive";
   }
 }
 
@@ -62,6 +62,7 @@ async function cleanupOrphanedWorktree(runId: unknown): Promise<void> {
     windowsHide: true,
   });
   await fsPromises.rm(stagingRoot, { recursive: true, force: true }).catch(() => undefined);
+  await fsPromises.rm(`${stagingRoot}.tar.gz`, { force: true }).catch(() => undefined);
   spawnSync("git", ["worktree", "prune"], {
     cwd: REPO_ROOT,
     stdio: "ignore",
@@ -91,15 +92,24 @@ async function cleanupOrphanedWorktree(runId: unknown): Promise<void> {
 
 async function currentUpdateStatus(): Promise<Record<string, unknown>> {
   const current = await readUpdateStatus();
-  if (!hasGitCheckout()) {
+  const source = updateSourceKind();
+  if (!source) {
     return {
       state: "unavailable",
       available: false,
-      message: "Automatic updates require a Git checkout.",
+      message: "The automatic update worker is missing. Reinstall Roblox MCP to restore it.",
+    };
+  }
+  if ((current as { state?: string }).state === "unavailable") {
+    return {
+      state: "idle",
+      available: true,
+      source,
+      message: "Ready to check for updates.",
     };
   }
   if (current.state !== "running" && current.state !== "restarting") {
-    return { ...current, available: true };
+    return { ...current, available: true, source };
   }
 
   const lock = await readUpdateLock();
@@ -110,7 +120,7 @@ async function currentUpdateStatus(): Promise<Record<string, unknown>> {
     typeof current.updatedAt === "number" &&
     Date.now() - current.updatedAt < STARTING_STATUS_MAX_AGE_MS;
   if (lockMatches || recentlyStarted) {
-    return { ...current, available: true };
+    return { ...current, available: true, source };
   }
 
   await cleanupOrphanedWorktree(current.runId);
@@ -124,7 +134,7 @@ async function currentUpdateStatus(): Promise<Record<string, unknown>> {
   await writeUpdateStatus(failed, {
     expectedRunId: typeof current.runId === "string" ? current.runId : undefined,
   });
-  return { ...failed, available: true };
+  return { ...failed, available: true, source };
 }
 
 export async function GET(
@@ -145,8 +155,9 @@ export async function POST(
 
   launchInProgress = true;
   try {
-    if (!hasGitCheckout()) {
-      json(res, 409, { error: "Automatic updates require a Git checkout." });
+    const source = updateSourceKind();
+    if (!source) {
+      json(res, 409, { error: "The automatic update worker is missing." });
       return;
     }
     const lock = await readUpdateLock();
@@ -212,7 +223,7 @@ export async function POST(
     }
     child.unref();
 
-    json(res, 202, { ...initialStatus, workerPid: child.pid });
+    json(res, 202, { ...initialStatus, source, workerPid: child.pid });
   } finally {
     launchInProgress = false;
   }

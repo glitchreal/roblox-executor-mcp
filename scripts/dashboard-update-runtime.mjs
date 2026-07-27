@@ -322,8 +322,17 @@ export async function activateCandidateBuild({
   activateCheckout = async () => undefined,
   writeStatus,
 }) {
-  const coreUrl = `http://127.0.0.1:${corePort}`;
-  await verifyCoreIdentity(coreUrl, corePid, coreInstanceId);
+  const hasRunningCore = Number.isInteger(corePid) && corePid > 0;
+  if (hasRunningCore !== Boolean(coreInstanceId)) {
+    throw new Error("A running core update requires both its PID and instance ID.");
+  }
+  if (hasRunningCore) {
+    await verifyCoreIdentity(
+      `http://127.0.0.1:${corePort}`,
+      corePid,
+      coreInstanceId
+    );
+  }
 
   const previousPointer = await readReleasePointer(serverRoot);
   const previousReleaseRoot = previousPointer?.releaseRoot || serverRoot;
@@ -358,24 +367,44 @@ export async function activateCandidateBuild({
 
   let updatedCore;
   try {
-    updatedCore = await restartCoreWithRollback({
-      serverRoot,
-      corePid,
-      coreInstanceId,
-      corePort,
-      nextReleaseRoot: releaseRoot,
-      previousReleaseRoot,
-      activateNext: async () => {
-        await writeReleasePointer(serverRoot, candidatePointer);
-        crashAtTestPhase("after-release-pointer");
-      },
-      activatePrevious: async () => {
+    if (hasRunningCore) {
+      updatedCore = await restartCoreWithRollback({
+        serverRoot,
+        corePid,
+        coreInstanceId,
+        corePort,
+        nextReleaseRoot: releaseRoot,
+        previousReleaseRoot,
+        activateNext: async () => {
+          await writeReleasePointer(serverRoot, candidatePointer);
+          crashAtTestPhase("after-release-pointer");
+        },
+        activatePrevious: async () => {
+          await writeReleasePointer(serverRoot, previousPointer);
+        },
+        coreExecutable,
+        coreStartTimeoutMs,
+        coreStopTimeoutMs,
+      });
+    } else {
+      await writeReleasePointer(serverRoot, candidatePointer);
+      crashAtTestPhase("after-release-pointer");
+      try {
+        updatedCore = await startReleaseCore({
+          releaseRoot,
+          serverRoot,
+          corePort,
+          coreStartTimeoutMs,
+        });
+      } catch (startupError) {
         await writeReleasePointer(serverRoot, previousPointer);
-      },
-      coreExecutable,
-      coreStartTimeoutMs,
-      coreStopTimeoutMs,
-    });
+        throw new Error(
+          `The updated core failed its final health check; the previous release remains selected: ${
+            startupError instanceof Error ? startupError.message : startupError
+          }`
+        );
+      }
+    }
   } catch (error) {
     await removeInactiveRelease(serverRoot, releaseRoot);
     throw error;

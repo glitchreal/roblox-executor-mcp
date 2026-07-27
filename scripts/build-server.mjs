@@ -55,6 +55,10 @@ for (const filename of [
   "dashboard-update-git.mjs",
   "dashboard-update-worker.mjs",
   "dashboard-update-runtime.mjs",
+  "legacy-runtime-migration.mjs",
+  "update-command.mjs",
+  "update-runner.mjs",
+  "update-source.mjs",
 ]) {
   fs.copyFileSync(
     path.join(root, "scripts", filename),

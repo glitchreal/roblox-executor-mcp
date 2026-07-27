@@ -103,10 +103,15 @@ test("macOS harness restarts force-close consented apps before reopening", async
   assert.match(installer, /function interactiveCodexCliIsRunning\(\)/);
 });
 
-test("legacy update migration keeps dry runs non-blocking", async () => {
-  const installer = await fs.readFile(installerPath, "utf8");
-  assert.match(installer, /if \(DRY_RUN\) \{[\s\S]*Would wait for the legacy server/);
-  assert.match(installer, /else \{\s*await waitForLegacyServerShutdown\(corePort\)/);
+test("legacy update entry delegates to the shared staged updater", async () => {
+  const [installer, command] = await Promise.all([
+    fs.readFile(installerPath, "utf8"),
+    fs.readFile(path.join(repoRoot, "scripts", "update-command.mjs"), "utf8"),
+  ]);
+  assert.match(installer, /Running the shared Roblox MCP updater/);
+  assert.match(installer, /path\.join\(CURRENT_REPO_DIR, "scripts", "update\.mjs"\)/);
+  assert.match(command, /legacyServerRequiresShutdown\(corePort\)/);
+  assert.match(command, /waitForLegacyServerShutdown\(corePort\)/);
 });
 
 test("web installer preview serves harness and skill data and rejects mutations", async (t) => {
@@ -532,6 +537,8 @@ test("browser installer is the default and the terminal installer remains explic
   assert.equal(packageJson.scripts["install:harnesses"], "node scripts/install-harnesses-web.mjs");
   assert.match(packageJson.scripts["install:harnesses:cli"], /install-harnesses\.mjs/);
   assert.match(packageJson.scripts["install:harnesses:preview"], /--preview/);
+  assert.equal(packageJson.scripts.update, "node scripts/update.mjs");
+  assert.ok(packageJson.files.includes("scripts/update.mjs"));
 });
 
 test("background service previews use the pointer-aware stable core bootstrap", async () => {
@@ -604,13 +611,17 @@ test("every dashboard feature script referenced by HTML has a production route",
 });
 
 test("dashboard update control starts and monitors the automatic updater", async () => {
-  const [html, dashboardScript, updateScript, route, worker, runtime] = await Promise.all([
+  const [html, dashboardScript, updateScript, route, worker, runner, source, command, runtime, packageJson] = await Promise.all([
     fs.readFile(path.join(repoRoot, "src", "http", "assets", "dashboard", "index.html"), "utf8"),
     fs.readFile(path.join(repoRoot, "src", "http", "assets", "dashboard", "dashboard.js"), "utf8"),
     fs.readFile(path.join(repoRoot, "src", "http", "assets", "dashboard", "update-settings.js"), "utf8"),
     fs.readFile(path.join(repoRoot, "src", "http", "routes", "api", "update.ts"), "utf8"),
     fs.readFile(path.join(repoRoot, "scripts", "dashboard-update-worker.mjs"), "utf8"),
+    fs.readFile(path.join(repoRoot, "scripts", "update-runner.mjs"), "utf8"),
+    fs.readFile(path.join(repoRoot, "scripts", "update-source.mjs"), "utf8"),
+    fs.readFile(path.join(repoRoot, "scripts", "update-command.mjs"), "utf8"),
     fs.readFile(path.join(repoRoot, "scripts", "dashboard-update-runtime.mjs"), "utf8"),
+    fs.readFile(path.join(repoRoot, "package.json"), "utf8"),
   ]);
 
   assert.match(html, /id="settingsUpdateBtn"/);
@@ -626,29 +637,34 @@ test("dashboard update control starts and monitors the automatic updater", async
   assert.match(route, /String\(process\.pid\)/);
   assert.match(route, /coreInstanceId/);
   assert.match(route, /updateWorkerIsRunning/);
-  assert.match(route, /Automatic updates require a Git checkout/);
+  assert.match(route, /return "archive"/);
   assert.match(worker, /acquireUpdateLock\(runId\)/);
-  assert.match(worker, /"git", \["fetch", "--prune"\]/);
-  assert.match(worker, /"worktree",\s+"add"/);
-  assert.doesNotMatch(worker, /\["pull"/);
-  assert.doesNotMatch(worker, /remote.*set-url/);
-  assert.match(worker, /inspectCleanCheckout\(serverRoot\)/);
+  assert.match(worker, /runStagedUpdate/);
+  assert.match(command, /runStagedUpdate/);
+  assert.match(packageJson, /"update": "node scripts\/update\.mjs"/);
+  assert.match(runner, /"git", \["fetch", "--prune"\]/);
+  assert.match(runner, /"worktree",\s+"add"/);
+  assert.doesNotMatch(runner, /\["pull"/);
+  assert.doesNotMatch(runner, /remote.*set-url/);
+  assert.match(runner, /inspectCleanCheckout\(serverRoot\)/);
+  assert.match(runner, /prepareArchiveSource/);
   assert.match(
-    worker,
-    /advanceCheckout\(serverRoot, targetCommit, checkout\.commit\)/
+    runner,
+    /advanceCheckout\(serverRoot, revision, source\.checkout\.commit\)/
   );
-  assert.match(
-    worker,
-    /restoreCheckout\(serverRoot, checkout\.commit, targetCommit\)/
-  );
-  assert.match(worker, /Installing the staged dependencies/);
-  assert.match(worker, /candidateNodeModules/);
+  assert.match(runner, /restoreCheckoutGit/);
+  assert.match(runner, /Installing the staged dependencies/);
+  assert.match(runner, /candidateNodeModules/);
+  assert.match(source, /codeload\.github\.com\/notpoiu\/roblox-mcp/);
+  assert.match(source, /unsafe path/);
   assert.match(runtime, /architecture === "background-core"/);
   assert.match(runtime, /previous build was restored/);
   await fs.access(
     path.join(repoRoot, "src", "http", "routes", "(dashboard)", "update-settings.js.ts")
   );
   await fs.access(path.join(repoRoot, "dist", "updater", "dashboard-update-git.mjs"));
+  await fs.access(path.join(repoRoot, "dist", "updater", "update-runner.mjs"));
+  await fs.access(path.join(repoRoot, "dist", "updater", "update-source.mjs"));
 });
 
 test("dashboard settings expose system startup and skill installation controls", async () => {
