@@ -15,9 +15,9 @@ import {
   getDetectedAutoexecTargets,
   writeLoaderToAutoexec,
 } from "../src/shared/autoexec.mjs";
+import { MAIN_REPO_URL } from "./repository-source.mjs";
 
 const DEFAULT_SERVER_NAME = "roblox-mcp";
-const MAIN_REPO_URL = "https://github.com/notpoiu/roblox-executor-mcp.git";
 const SERVER_NAME = normalizeServerName(getArgValue("--server-name") || process.env.ROBLOX_MCP_SERVER_NAME || DEFAULT_SERVER_NAME);
 const CURRENT_REPO_DIR = process.cwd();
 const PACKAGE_VERSION = readPackageVersion();
@@ -1059,6 +1059,8 @@ function normalizeGitRemote(value) {
   let remote = String(value || "").trim();
   remote = remote.replace(/^git@github\.com:/i, "https://github.com/");
   remote = remote.replace(/^ssh:\/\/git@github\.com\//i, "https://github.com/");
+  remote = remote.replace(/^git@gitlab\.com:/i, "https://gitlab.com/");
+  remote = remote.replace(/^ssh:\/\/git@gitlab\.com\//i, "https://gitlab.com/");
   remote = remote.replace(/^http:\/\//i, "https://");
   remote = remote.replace(/\/+$/, "");
   remote = remote.replace(/\.git$/i, "");

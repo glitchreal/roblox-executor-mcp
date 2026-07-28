@@ -3,9 +3,9 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import fsPromises from "node:fs/promises";
 import path from "node:path";
+import { DEFAULT_UPDATE_ARCHIVE_URL } from "./repository-source.mjs";
 
-export const DEFAULT_UPDATE_ARCHIVE_URL =
-  "https://codeload.github.com/notpoiu/roblox-mcp/tar.gz/refs/heads/main";
+export { DEFAULT_UPDATE_ARCHIVE_URL } from "./repository-source.mjs";
 
 const MAX_ARCHIVE_BYTES = 512 * 1024 * 1024;
 

@@ -15,6 +15,7 @@ import {
   resolveNpxInvocation,
   skillAgentIdsForHarnesses,
 } from "../src/shared/skill-install.mjs";
+import { resolveRepositoryHost } from "../scripts/repository-source.mjs";
 
 const execFileAsync = promisify(execFile);
 const repoRoot = path.resolve(import.meta.dirname, "..");
@@ -671,7 +672,7 @@ test("every dashboard feature script referenced by HTML has a production route",
 });
 
 test("dashboard update control starts and monitors the automatic updater", async () => {
-  const [html, dashboardScript, updateScript, route, worker, runner, source, command, runtime, packageJson] = await Promise.all([
+  const [html, dashboardScript, updateScript, route, worker, runner, source, repositorySource, command, runtime, packageJson] = await Promise.all([
     fs.readFile(path.join(repoRoot, "src", "http", "assets", "dashboard", "index.html"), "utf8"),
     fs.readFile(path.join(repoRoot, "src", "http", "assets", "dashboard", "dashboard.js"), "utf8"),
     fs.readFile(path.join(repoRoot, "src", "http", "assets", "dashboard", "update-settings.js"), "utf8"),
@@ -679,6 +680,7 @@ test("dashboard update control starts and monitors the automatic updater", async
     fs.readFile(path.join(repoRoot, "scripts", "dashboard-update-worker.mjs"), "utf8"),
     fs.readFile(path.join(repoRoot, "scripts", "update-runner.mjs"), "utf8"),
     fs.readFile(path.join(repoRoot, "scripts", "update-source.mjs"), "utf8"),
+    fs.readFile(path.join(repoRoot, "scripts", "repository-source.mjs"), "utf8"),
     fs.readFile(path.join(repoRoot, "scripts", "update-command.mjs"), "utf8"),
     fs.readFile(path.join(repoRoot, "scripts", "dashboard-update-runtime.mjs"), "utf8"),
     fs.readFile(path.join(repoRoot, "package.json"), "utf8"),
@@ -715,7 +717,21 @@ test("dashboard update control starts and monitors the automatic updater", async
   assert.match(runner, /restoreCheckoutGit/);
   assert.match(runner, /Installing the staged dependencies/);
   assert.match(runner, /candidateNodeModules/);
-  assert.match(source, /codeload\.github\.com\/notpoiu\/roblox-mcp/);
+  assert.match(source, /DEFAULT_UPDATE_ARCHIVE_URL/);
+  assert.match(repositorySource, /USE_GITLAB = true/);
+  assert.match(repositorySource, /gitlab\.com\/upio\/roblox-executor-mcp/);
+  assert.match(repositorySource, /ROBLOX_MCP_REPOSITORY_HOST/);
+  assert.match(repositorySource, /github\.com\/notpoiu\/roblox-executor-mcp/);
+  assert.equal(resolveRepositoryHost({}, true), "gitlab");
+  assert.equal(resolveRepositoryHost({}, false), "github");
+  assert.equal(
+    resolveRepositoryHost({ ROBLOX_MCP_REPOSITORY_HOST: "github" }, true),
+    "github"
+  );
+  assert.throws(
+    () => resolveRepositoryHost({ ROBLOX_MCP_REPOSITORY_HOST: "bitbucket" }),
+    /must be "gitlab" or "github"/
+  );
   assert.match(source, /unsafe path/);
   assert.match(runtime, /architecture === "background-core"/);
   assert.match(runtime, /previous build was restored/);
@@ -725,6 +741,7 @@ test("dashboard update control starts and monitors the automatic updater", async
   await fs.access(path.join(repoRoot, "dist", "updater", "dashboard-update-git.mjs"));
   await fs.access(path.join(repoRoot, "dist", "updater", "update-runner.mjs"));
   await fs.access(path.join(repoRoot, "dist", "updater", "update-source.mjs"));
+  await fs.access(path.join(repoRoot, "dist", "updater", "repository-source.mjs"));
 });
 
 test("dashboard settings expose system startup and skill installation controls", async () => {

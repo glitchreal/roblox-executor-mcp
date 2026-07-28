@@ -56,6 +56,7 @@ for (const filename of [
   "dashboard-update-worker.mjs",
   "dashboard-update-runtime.mjs",
   "legacy-runtime-migration.mjs",
+  "repository-source.mjs",
   "update-command.mjs",
   "update-runner.mjs",
   "update-source.mjs",

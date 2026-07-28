@@ -41,9 +41,13 @@ Use it to see connected Roblox clients, inspect scripts, run tools, view server 
 ### 1. Clone the server
 
 ```bash
-git clone https://github.com/notpoiu/roblox-executor-mcp.git
+git clone https://gitlab.com/upio/roblox-executor-mcp.git
 cd roblox-executor-mcp
 ```
+
+GitLab is the default source for installer and dashboard updates. Set
+`ROBLOX_MCP_REPOSITORY_HOST=github` to use the GitHub mirror for an update, or
+change `USE_GITLAB` in `scripts/repository-source.mjs` to change the default.
 
 ### 2. Run the installer
 
