@@ -456,9 +456,11 @@ async function runProcess(command, args, options = {}) {
     });
     return [stdout, stderr].filter(Boolean).join("\n");
   } catch (error) {
-    const details = stripAnsi(
-      String(error?.stderr || error?.stdout || error?.message || error)
-    ).trim();
+    const details = stripAnsi([
+      error?.stderr,
+      error?.stdout,
+      error?.message,
+    ].filter(Boolean).map(String).join("\n")).trim();
     throw new Error(details || `${command} failed.`);
   }
 }

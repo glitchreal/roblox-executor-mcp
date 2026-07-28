@@ -15,6 +15,7 @@ import {
   resolveNpxInvocation,
   skillAgentIdsForHarnesses,
 } from "../src/shared/skill-install.mjs";
+import { resolvePackageCommand } from "../scripts/package-command.mjs";
 import { resolveRepositoryHost } from "../scripts/repository-source.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -468,14 +469,14 @@ test("skill installation targets only compatible detected harnesses", async () =
   assert.equal(windowsInstallInvocation.command, windowsNode);
   assert.equal(windowsInstallInvocation.args[0], windowsNpxCli);
   assert.equal(windowsInstallInvocation.options.shell, false);
-  assert.deepEqual(
-    resolveNpxInvocation({
+  assert.throws(
+    () => resolveNpxInvocation({
       platform: "win32",
       execPath: windowsNode,
       env: {},
       fileExists: () => false,
     }),
-    { command: "npx.cmd", argsPrefix: [], shell: true }
+    /Could not locate npx-cli\.js/
   );
 
   const skillInstallerSource = await fs.readFile(
@@ -672,7 +673,7 @@ test("every dashboard feature script referenced by HTML has a production route",
 });
 
 test("dashboard update control starts and monitors the automatic updater", async () => {
-  const [html, dashboardScript, updateScript, route, worker, runner, source, repositorySource, command, runtime, packageJson] = await Promise.all([
+  const [html, dashboardScript, updateScript, route, worker, runner, source, packageCommand, repositorySource, command, runtime, packageJson] = await Promise.all([
     fs.readFile(path.join(repoRoot, "src", "http", "assets", "dashboard", "index.html"), "utf8"),
     fs.readFile(path.join(repoRoot, "src", "http", "assets", "dashboard", "dashboard.js"), "utf8"),
     fs.readFile(path.join(repoRoot, "src", "http", "assets", "dashboard", "update-settings.js"), "utf8"),
@@ -680,6 +681,7 @@ test("dashboard update control starts and monitors the automatic updater", async
     fs.readFile(path.join(repoRoot, "scripts", "dashboard-update-worker.mjs"), "utf8"),
     fs.readFile(path.join(repoRoot, "scripts", "update-runner.mjs"), "utf8"),
     fs.readFile(path.join(repoRoot, "scripts", "update-source.mjs"), "utf8"),
+    fs.readFile(path.join(repoRoot, "scripts", "package-command.mjs"), "utf8"),
     fs.readFile(path.join(repoRoot, "scripts", "repository-source.mjs"), "utf8"),
     fs.readFile(path.join(repoRoot, "scripts", "update-command.mjs"), "utf8"),
     fs.readFile(path.join(repoRoot, "scripts", "dashboard-update-runtime.mjs"), "utf8"),
@@ -717,6 +719,23 @@ test("dashboard update control starts and monitors the automatic updater", async
   assert.match(runner, /restoreCheckoutGit/);
   assert.match(runner, /Installing the staged dependencies/);
   assert.match(runner, /candidateNodeModules/);
+  const windowsNode = String.raw`C:\Program Files\nodejs\node.exe`;
+  const windowsNpmCli = String.raw`C:\Program Files\nodejs\node_modules\npm\bin\npm-cli.js`;
+  assert.deepEqual(
+    resolvePackageCommand("npm.cmd", ["install", "--ignore-scripts"], {
+      platform: "win32",
+      execPath: windowsNode,
+      env: { npm_execpath: windowsNpmCli },
+      fileExists: (filePath) => filePath === windowsNpmCli,
+    }),
+    {
+      command: windowsNode,
+      args: [windowsNpmCli, "install", "--ignore-scripts"],
+      shell: false,
+    }
+  );
+  assert.match(packageCommand, /Could not locate \$\{cliName\}/);
+  assert.doesNotMatch(runner, /shell:\s*useShell/);
   assert.match(source, /DEFAULT_UPDATE_ARCHIVE_URL/);
   assert.match(repositorySource, /USE_GITLAB = true/);
   assert.match(repositorySource, /gitlab\.com\/upio\/roblox-executor-mcp/);
@@ -741,6 +760,7 @@ test("dashboard update control starts and monitors the automatic updater", async
   await fs.access(path.join(repoRoot, "dist", "updater", "dashboard-update-git.mjs"));
   await fs.access(path.join(repoRoot, "dist", "updater", "update-runner.mjs"));
   await fs.access(path.join(repoRoot, "dist", "updater", "update-source.mjs"));
+  await fs.access(path.join(repoRoot, "dist", "updater", "package-command.mjs"));
   await fs.access(path.join(repoRoot, "dist", "updater", "repository-source.mjs"));
 });
 

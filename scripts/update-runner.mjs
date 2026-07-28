@@ -1,6 +1,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { resolvePackageCommand } from "./package-command.mjs";
 
 import {
   activateCandidateBuild,
@@ -25,14 +26,6 @@ function commandExists(command) {
   return spawnSync(probe, [command], { stdio: "ignore", shell: false }).status === 0;
 }
 
-function executable(command) {
-  return process.platform === "win32" &&
-    ["npm", "pnpm"].includes(command) &&
-    !command.endsWith(".cmd")
-    ? `${command}.cmd`
-    : command;
-}
-
 export async function runUpdateCommand(
   command,
   args,
@@ -40,12 +33,11 @@ export async function runUpdateCommand(
 ) {
   let output = "";
   await new Promise((resolve, reject) => {
-    const commandToRun = executable(command);
-    const useShell = process.platform === "win32" && commandToRun.endsWith(".cmd");
-    const child = spawn(commandToRun, args, {
+    const launch = resolvePackageCommand(command, args, { env });
+    const child = spawn(launch.command, launch.args, {
       cwd,
       env: { ...env, CI: "true" },
-      shell: useShell,
+      shell: launch.shell,
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
     });
@@ -145,9 +137,11 @@ export async function runStagedUpdate({
 
     const runner = packageRunner || (commandExists("bun")
       ? "bun"
-      : commandExists("pnpm")
-        ? "pnpm"
-        : "npm");
+      : process.platform === "win32"
+        ? "npm"
+        : commandExists("pnpm")
+          ? "pnpm"
+          : "npm");
     await status("Installing the staged dependencies…", { source: source.kind });
     await runCommand(runner, ["install", "--ignore-scripts"], {
       cwd: stagingRoot,

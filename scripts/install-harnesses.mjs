@@ -15,6 +15,7 @@ import {
   getDetectedAutoexecTargets,
   writeLoaderToAutoexec,
 } from "../src/shared/autoexec.mjs";
+import { resolvePackageCommand } from "./package-command.mjs";
 import { MAIN_REPO_URL } from "./repository-source.mjs";
 
 const DEFAULT_SERVER_NAME = "roblox-mcp";
@@ -823,7 +824,13 @@ async function installServer(serverRoot, results, options = {}) {
   if (options.announceRepo !== false) {
     log("info", `Using current repository: ${serverRoot}`);
   }
-  const runner = commandExists("bun") ? "bun" : commandExists("pnpm") ? "pnpm" : "npm";
+  const runner = commandExists("bun")
+    ? "bun"
+    : process.platform === "win32"
+      ? "npm"
+      : commandExists("pnpm")
+        ? "pnpm"
+        : "npm";
   await run(
     runner,
     ["install", "--ignore-scripts"],
@@ -1876,14 +1883,14 @@ async function run(command, args, options = {}) {
   let output = "";
   await new Promise((resolve, reject) => {
     const commandToRun = spawnCommand(command);
-    const useShell = process.platform === "win32" && commandToRun.endsWith(".cmd");
     let child;
     try {
-      child = spawn(commandToRun, args, {
+      const launch = resolvePackageCommand(commandToRun, args);
+      child = spawn(launch.command, launch.args, {
         cwd: options.cwd || process.cwd(),
         env: { ...process.env, CI: "true" },
         stdio: ["ignore", "pipe", "pipe"],
-        shell: useShell,
+        shell: launch.shell,
         windowsHide: true,
       });
     } catch (error) {
@@ -1923,14 +1930,14 @@ async function runForeground(command, args, options = {}) {
   log("run", options.label || [command, ...args].join(" "));
   await new Promise((resolve, reject) => {
     const commandToRun = spawnCommand(command);
-    const useShell = process.platform === "win32" && commandToRun.endsWith(".cmd");
     let child;
     try {
-      child = spawn(commandToRun, args, {
+      const launch = resolvePackageCommand(commandToRun, args);
+      child = spawn(launch.command, launch.args, {
         cwd: options.cwd || process.cwd(),
         env: process.env,
         stdio: "inherit",
-        shell: useShell,
+        shell: launch.shell,
         windowsHide: false,
       });
     } catch (error) {

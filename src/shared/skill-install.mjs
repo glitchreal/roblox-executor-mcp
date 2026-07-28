@@ -68,11 +68,9 @@ export function resolveNpxInvocation(options = {}) {
     };
   }
 
-  return {
-    command: "npx.cmd",
-    argsPrefix: [],
-    shell: true,
-  };
+  throw new Error(
+    "Could not locate npx-cli.js. Reinstall Node.js with npm before installing the Roblox MCP skill."
+  );
 }
 
 export function skillAgentForHarness(harnessId) {
