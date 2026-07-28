@@ -2540,7 +2540,9 @@ function renderDecompilerSettings(options = {}) {
 function renderDecompilerAddMenu() {
     const menu = $('settingsAddDecompilerMenu');
     if (!menu || !decompilerSettings) return;
-    const disabled = knownDecompilerIds().filter(id => !ensureDecompilerProvider(id).enabled);
+    const disabled = knownDecompilerIds().filter(id =>
+        !isCustomDecompilerProviderId(id) && !ensureDecompilerProvider(id).enabled
+    );
     const existing = disabled.map(id => {
         const ui = providerUi(id);
         return `<button class="settings-add-provider-item" type="button" data-add-provider="${escapeHtml(id)}"><strong>${escapeHtml(ui.label)}</strong><span>${escapeHtml(ui.byline)}</span></button>`;

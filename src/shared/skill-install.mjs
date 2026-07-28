@@ -38,6 +38,43 @@ export const SKILL_AGENT_BY_HARNESS = Object.freeze({
 
 const knownAgentIds = new Set(Object.values(SKILL_AGENT_BY_HARNESS));
 
+export function resolveNpxInvocation(options = {}) {
+  const platform = options.platform || process.platform;
+  const execPath = options.execPath || process.execPath;
+  const environment = options.env || process.env;
+  const fileExists = options.fileExists || fsSync.existsSync;
+  const pathApi = platform === "win32" ? path.win32 : path;
+  if (platform !== "win32") {
+    const adjacentNpx = pathApi.join(pathApi.dirname(execPath), "npx");
+    return {
+      command: fileExists(adjacentNpx) ? adjacentNpx : "npx",
+      argsPrefix: [],
+      shell: false,
+    };
+  }
+
+  const npxCliCandidates = [
+    pathApi.join(pathApi.dirname(execPath), "node_modules", "npm", "bin", "npx-cli.js"),
+    environment.npm_execpath
+      ? pathApi.join(pathApi.dirname(environment.npm_execpath), "npx-cli.js")
+      : null,
+  ].filter(Boolean);
+  const npxCli = npxCliCandidates.find((candidate) => fileExists(candidate));
+  if (npxCli) {
+    return {
+      command: execPath,
+      argsPrefix: [npxCli],
+      shell: false,
+    };
+  }
+
+  return {
+    command: "npx.cmd",
+    argsPrefix: [],
+    shell: true,
+  };
+}
+
 export function skillAgentForHarness(harnessId) {
   return SKILL_AGENT_BY_HARNESS[harnessId] || null;
 }
@@ -93,10 +130,9 @@ export async function installRobloxMcpSkill(options) {
     return { installedAgentIds: agentIds, output: "" };
   }
 
-  const npxName = process.platform === "win32" ? "npx.cmd" : "npx";
-  const adjacentNpx = path.join(path.dirname(process.execPath), npxName);
-  const npx = fsSync.existsSync(adjacentNpx) ? adjacentNpx : npxName;
+  const npx = resolveNpxInvocation(options);
   const args = [
+    ...npx.argsPrefix,
     "--yes",
     "skills",
     "add",
@@ -108,9 +144,9 @@ export async function installRobloxMcpSkill(options) {
   for (const agentId of agentIds) args.push("-a", agentId);
   args.push("-y");
   const result = await (options.runCommand || defaultRunCommand)(
-    npx,
+    npx.command,
     args,
-    { cwd: serverRoot, shell: process.platform === "win32" }
+    { cwd: serverRoot, shell: npx.shell }
   );
   return {
     installedAgentIds: agentIds,

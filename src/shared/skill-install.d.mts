@@ -10,6 +10,12 @@ export interface SkillCommandResult {
 }
 
 export const SKILL_AGENT_BY_HARNESS: Readonly<Record<string, string>>;
+export function resolveNpxInvocation(options?: {
+  platform?: NodeJS.Platform;
+  execPath?: string;
+  env?: NodeJS.ProcessEnv;
+  fileExists?: (filePath: string) => boolean;
+}): { command: string; argsPrefix: string[]; shell: boolean };
 export function skillAgentForHarness(harnessId: string): string | null;
 export function skillAgentIdsForHarnesses(harnessIds: string[]): string[];
 export function detectSkillTargets(options: {
@@ -24,6 +30,10 @@ export function installRobloxMcpSkill(options: {
   serverRoot: string;
   agentIds?: string[];
   dryRun?: boolean;
+  platform?: NodeJS.Platform;
+  execPath?: string;
+  env?: NodeJS.ProcessEnv;
+  fileExists?: (filePath: string) => boolean;
   runCommand?: (
     command: string,
     args: string[],

@@ -12,6 +12,7 @@ import {
 import {
   detectSkillTargets,
   installRobloxMcpSkill,
+  resolveNpxInvocation,
   skillAgentIdsForHarnesses,
 } from "../src/shared/skill-install.mjs";
 
@@ -435,11 +436,53 @@ test("skill installation targets only compatible detected harnesses", async () =
     "-g",
   ]);
   assert.deepEqual(invocation.args.slice(7), ["-a", "codex", "-a", "cursor", "-y"]);
+
+  const windowsNode = String.raw`C:\Program Files\nodejs\node.exe`;
+  const windowsNpxCli = String.raw`C:\Program Files\nodejs\node_modules\npm\bin\npx-cli.js`;
+  const windowsInvocation = resolveNpxInvocation({
+    platform: "win32",
+    execPath: windowsNode,
+    env: {},
+    fileExists: (filePath) => filePath === windowsNpxCli,
+  });
+  assert.deepEqual(windowsInvocation, {
+    command: windowsNode,
+    argsPrefix: [windowsNpxCli],
+    shell: false,
+  });
+
+  let windowsInstallInvocation;
+  await installRobloxMcpSkill({
+    serverRoot: repoRoot,
+    agentIds: ["codex"],
+    platform: "win32",
+    execPath: windowsNode,
+    env: {},
+    fileExists: (filePath) => filePath === windowsNpxCli,
+    runCommand: async (command, args, options) => {
+      windowsInstallInvocation = { command, args, options };
+      return { stdout: "installed", stderr: "" };
+    },
+  });
+  assert.equal(windowsInstallInvocation.command, windowsNode);
+  assert.equal(windowsInstallInvocation.args[0], windowsNpxCli);
+  assert.equal(windowsInstallInvocation.options.shell, false);
+  assert.deepEqual(
+    resolveNpxInvocation({
+      platform: "win32",
+      execPath: windowsNode,
+      env: {},
+      fileExists: () => false,
+    }),
+    { command: "npx.cmd", argsPrefix: [], shell: true }
+  );
+
   const skillInstallerSource = await fs.readFile(
     path.join(repoRoot, "src", "shared", "skill-install.mjs"),
     "utf8"
   );
-  assert.match(skillInstallerSource, /path\.join\(path\.dirname\(process\.execPath\), npxName\)/);
+  assert.match(skillInstallerSource, /"node_modules", "npm", "bin", "npx-cli\.js"/);
+  assert.match(skillInstallerSource, /command: execPath,[\s\S]*?shell: false/);
   assert.match(skillInstallerSource, /PATH: \[nodeBin, inheritedPath\]/);
   await assert.rejects(
     installRobloxMcpSkill({
@@ -592,6 +635,23 @@ test("dashboard add menu routes harness installs through the client setup API", 
   assert.match(clientSetupJs, /action: 'install-harnesses'/);
   assert.match(route, /"--install-only"/);
   assert.match(route, /restartMessage/);
+});
+
+test("decompiler add menu shows one custom provider creation option", async () => {
+  const dashboardScript = await fs.readFile(
+    path.join(repoRoot, "src", "http", "assets", "dashboard", "dashboard.js"),
+    "utf8"
+  );
+  const menuRenderer = dashboardScript.slice(
+    dashboardScript.indexOf("function renderDecompilerAddMenu()"),
+    dashboardScript.indexOf("function collectDecompilerSettings()")
+  );
+
+  assert.match(menuRenderer, /!isCustomDecompilerProviderId\(id\)/);
+  assert.equal(
+    [...menuRenderer.matchAll(/data-add-custom-provider/g)].length,
+    1
+  );
 });
 
 test("every dashboard feature script referenced by HTML has a production route", async () => {
