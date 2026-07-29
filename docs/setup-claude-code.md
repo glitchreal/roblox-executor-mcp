@@ -10,10 +10,11 @@ claude mcp add roblox-executor-mcp -- node /path/to/roblox-executor-mcp/dist/ind
 
 Replace `/path/to/roblox-executor-mcp` with the actual path where you cloned the repo.
 
-This adds the server to your local project config (`.claude/settings.local.json`). To add it globally instead, use:
+This adds the server to your local project configuration. To make it available
+to every project for the current user, use:
 
 ```bash
-claude mcp add --global roblox-executor-mcp -- node /path/to/roblox-executor-mcp/dist/index.js
+claude mcp add --scope user roblox-executor-mcp -- node /path/to/roblox-executor-mcp/dist/index.js
 ```
 
 ## 2. Verify

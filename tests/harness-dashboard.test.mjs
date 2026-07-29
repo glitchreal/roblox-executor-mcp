@@ -167,10 +167,12 @@ test("web installer preview serves harness and skill data and rejects mutations"
 });
 
 test("web installer presents harness, skill, connector, background, and install progress", async () => {
-  const [html, script, styles] = await Promise.all([
+  const [html, script, styles, harnessInstaller, claudeGuide] = await Promise.all([
     fs.readFile(path.join(repoRoot, "src", "http", "assets", "installer", "index.html"), "utf8"),
     fs.readFile(path.join(repoRoot, "src", "http", "assets", "installer", "installer.js"), "utf8"),
     fs.readFile(path.join(repoRoot, "src", "http", "assets", "installer", "installer.css"), "utf8"),
+    fs.readFile(path.join(repoRoot, "scripts", "install-harnesses.mjs"), "utf8"),
+    fs.readFile(path.join(repoRoot, "docs", "setup-claude-code.md"), "utf8"),
   ]);
 
   assert.doesNotMatch(html, /data-screen="review"|Review Your Setup/);
@@ -233,6 +235,10 @@ test("web installer presents harness, skill, connector, background, and install 
   assert.match(styles, /@media \(prefers-reduced-motion: reduce\)/);
   assert.match(styles, /animation: dialog-enter 220ms var\(--ease-out\)/);
   assert.match(styles, /animation-delay: min\(calc\(var\(--row-index, 0\) \* 25ms\), 200ms\)/);
+  assert.match(harnessInstaller, /"mcp", "add", SERVER_NAME, "--scope", "user"/);
+  assert.doesNotMatch(harnessInstaller, /claude mcp add --global/);
+  assert.match(claudeGuide, /claude mcp add --scope user/);
+  assert.doesNotMatch(claudeGuide, /--global/);
 });
 
 test("web installer completes a safe dry-run and exits after success", async (t) => {
@@ -720,9 +726,10 @@ test("dashboard update control starts and monitors the automatic updater", async
   assert.match(runner, /Installing the staged dependencies/);
   assert.match(runner, /candidateNodeModules/);
   const windowsNode = String.raw`C:\Program Files\nodejs\node.exe`;
+  const windowsNpmShim = String.raw`C:\Program Files\nodejs\npm.cmd`;
   const windowsNpmCli = String.raw`C:\Program Files\nodejs\node_modules\npm\bin\npm-cli.js`;
   assert.deepEqual(
-    resolvePackageCommand("npm.cmd", ["install", "--ignore-scripts"], {
+    resolvePackageCommand(windowsNpmShim, ["install", "--ignore-scripts"], {
       platform: "win32",
       execPath: windowsNode,
       env: { npm_execpath: windowsNpmCli },
@@ -731,6 +738,39 @@ test("dashboard update control starts and monitors the automatic updater", async
     {
       command: windowsNode,
       args: [windowsNpmCli, "install", "--ignore-scripts"],
+      shell: false,
+    }
+  );
+  const windowsClaudeShim = String.raw`C:\Users\Jordan\AppData\Roaming\npm\claude.cmd`;
+  const windowsClaudeCli = String.raw`C:\Users\Jordan\AppData\Roaming\npm\node_modules\@anthropic-ai\claude-code\cli.js`;
+  assert.deepEqual(
+    resolvePackageCommand(windowsClaudeShim, [
+      "mcp", "add", "roblox-mcp", "--scope", "user",
+    ], {
+      platform: "win32",
+      execPath: windowsNode,
+      fileExists: (filePath) => filePath === windowsClaudeCli,
+    }),
+    {
+      command: windowsNode,
+      args: [
+        windowsClaudeCli,
+        "mcp", "add", "roblox-mcp", "--scope", "user",
+      ],
+      shell: false,
+    }
+  );
+  const windowsCodeShim = String.raw`C:\Program Files\Microsoft VS Code\bin\code.cmd`;
+  const windowsCodeExe = String.raw`C:\Program Files\Microsoft VS Code\Code.exe`;
+  assert.deepEqual(
+    resolvePackageCommand(windowsCodeShim, ["--add-mcp", "{}"], {
+      platform: "win32",
+      execPath: windowsNode,
+      fileExists: (filePath) => filePath === windowsCodeExe,
+    }),
+    {
+      command: windowsCodeExe,
+      args: ["--add-mcp", "{}"],
       shell: false,
     }
   );

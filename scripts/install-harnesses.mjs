@@ -1732,9 +1732,9 @@ function escapePowerShellSingleQuoted(value) {
 
 async function configureClaudeCode(serverEntry) {
   if (!commandExists("claude")) {
-    throw new Error("Claude Code CLI not found. Run manually: claude mcp add --global " + SERVER_NAME + " -- node " + mcpServerArgs(serverEntry).map(quote).join(" "));
+    throw new Error("Claude Code CLI not found. Run manually: claude mcp add --scope user " + SERVER_NAME + " -- node " + mcpServerArgs(serverEntry).map(quote).join(" "));
   }
-  await run("claude", ["mcp", "add", "--global", SERVER_NAME, "--", "node", ...mcpServerArgs(serverEntry)], { label: "Adding Claude Code MCP server" });
+  await run("claude", ["mcp", "add", SERVER_NAME, "--scope", "user", "--", "node", ...mcpServerArgs(serverEntry)], { label: "Adding Claude Code MCP server" });
 }
 
 async function configureVsCodeCopilot(serverEntry) {
@@ -3515,6 +3515,10 @@ function commandExists(command) {
 
 function spawnCommand(command) {
   if (process.platform !== "win32") return command;
+  if (["npm", "pnpm", "code", "claude"].includes(command.toLowerCase())) {
+    const resolved = findOnPath(command);
+    if (resolved) return resolved;
+  }
   if (command.endsWith(".cmd") || command.endsWith(".exe")) return command;
   if (["npm", "pnpm", "yarn", "code", "claude"].includes(command)) return `${command}.cmd`;
   return command;
