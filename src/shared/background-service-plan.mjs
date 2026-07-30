@@ -24,13 +24,22 @@ export function getBackgroundServicePlan(serverRoot) {
     };
   }
   if (process.platform === "win32") {
+    const configPath = path.join(
+      process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming"),
+      "Microsoft",
+      "Windows",
+      "Start Menu",
+      "Programs",
+      "Startup",
+      "Roblox MCP.vbs"
+    );
     return {
-      id: "scheduled-task",
-      manager: "Windows Task Scheduler",
+      id: "windows-startup",
+      manager: "Windows Startup",
       title: "Run in the background",
       description: "Start the active Roblox MCP release when you sign in.",
-      configPath: "Task Scheduler Library\\Roblox MCP",
-      command: 'schtasks /Create /TN "Roblox MCP" /SC ONLOGON …',
+      configPath: displayPath(configPath),
+      command: "Place Roblox MCP.vbs in the current user's Startup folder",
       coreEntry: displayPath(coreEntry),
     };
   }

@@ -342,7 +342,7 @@ test("background service installer supports native managers and on-demand remova
   const cases = [
     ["darwin", "launchd"],
     ["linux", "systemd user service"],
-    ["win32", "Windows Task Scheduler"],
+    ["win32", "Windows Startup"],
   ];
   for (const [platform, manager] of cases) {
     const background = await applyBackgroundService({
@@ -390,9 +390,25 @@ test("background startup status follows each platform's native registration", ()
   assert.equal(
     getBackgroundServiceStatus({
       platform: "win32",
-      windowsTaskExists: (taskName) => taskName === "Roblox MCP",
+      env: { APPDATA: "/Users/test/AppData/Roaming" },
+      fileExists: (filePath) => filePath.endsWith("Startup/Roblox MCP.vbs"),
+      windowsTaskExists: () => false,
     }).enabled,
     true
+  );
+  assert.deepEqual(
+    getBackgroundServiceStatus({
+      platform: "win32",
+      env: { APPDATA: "/Users/test/AppData/Roaming" },
+      fileExists: () => false,
+      windowsTaskExists: (taskName) => taskName === "Roblox MCP",
+    }),
+    {
+      supported: true,
+      enabled: true,
+      manager: "Windows Task Scheduler (legacy)",
+      configPath: "Task Scheduler Library\\Roblox MCP",
+    }
   );
 });
 
@@ -514,14 +530,19 @@ test("background service installer starts each native manager immediately", asyn
   const cases = [
     ["darwin", "launchctl", "kickstart"],
     ["linux", "systemctl", "restart"],
-    ["win32", "schtasks", "/Run"],
+    ["win32", "wscript.exe", "//B"],
   ];
+  let windowsCalls = [];
   for (const [platform, commandName, startArgument] of cases) {
     const calls = [];
+    const platformHome = path.join(temporaryRoot, platform);
     await applyBackgroundService({
       serverRoot: path.join(temporaryRoot, "server"),
       platform,
-      homeDir: path.join(temporaryRoot, platform),
+      homeDir: platformHome,
+      env: platform === "win32"
+        ? { APPDATA: path.join(platformHome, "AppData", "Roaming") }
+        : process.env,
       runCommand: async (command, args) => {
         calls.push([command, ...args]);
       },
@@ -529,7 +550,40 @@ test("background service installer starts each native manager immediately", asyn
     assert.ok(calls.some((call) =>
       call[0] === commandName && call.includes(startArgument)
     ), `${platform} did not start its registered service`);
+    if (platform === "win32") windowsCalls = calls;
   }
+  const windowsStartupFile = path.join(
+    temporaryRoot,
+    "win32",
+    "AppData",
+    "Roaming",
+    "Microsoft",
+    "Windows",
+    "Start Menu",
+    "Programs",
+    "Startup",
+    "Roblox MCP.vbs"
+  );
+  const windowsStartupScript = await fs.readFile(windowsStartupFile, "utf8");
+  assert.match(windowsStartupScript, /CreateObject\("WScript\.Shell"\)/);
+  assert.match(windowsStartupScript, /launcher = Chr\(34\)/);
+  assert.match(windowsStartupScript, /shell\.Run launcher, 0, False/);
+  assert.ok(windowsCalls.some((call) =>
+    call[0] === "schtasks" && call.includes("/Delete")
+  ));
+  assert.ok(!windowsCalls.some((call) => call.includes("/Create")));
+
+  await applyBackgroundService({
+    serverRoot: path.join(temporaryRoot, "server"),
+    platform: "win32",
+    mode: "on-demand",
+    homeDir: path.join(temporaryRoot, "win32"),
+    env: {
+      APPDATA: path.join(temporaryRoot, "win32", "AppData", "Roaming"),
+    },
+    runCommand: async () => undefined,
+  });
+  await assert.rejects(fs.access(windowsStartupFile));
 });
 
 test("launchd setup stops conflicting runtimes before bootstrap and retries transient failures", async () => {

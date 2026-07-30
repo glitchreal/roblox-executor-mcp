@@ -37,5 +37,6 @@ export function getBackgroundServiceStatus(options?: {
   env?: NodeJS.ProcessEnv;
   homeDir?: string;
   fileExists?: (filePath: string) => boolean;
+  /** Supports detection and cleanup of pre-migration scheduled tasks. */
   windowsTaskExists?: (taskName: string) => boolean;
 }): BackgroundServiceStatus;

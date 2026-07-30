@@ -13,6 +13,7 @@ import {
 const execFileAsync = promisify(execFile);
 const LAUNCHD_LABEL = "com.roblox-mcp.core";
 const WINDOWS_TASK_NAME = "Roblox MCP";
+const WINDOWS_STARTUP_FILE = "Roblox MCP.vbs";
 const SYSTEMD_UNIT_NAME = "roblox-mcp.service";
 
 export async function applyBackgroundService(options) {
@@ -55,9 +56,11 @@ export async function applyBackgroundService(options) {
     });
   }
   if (platform === "win32") {
-    return applyWindowsTask({
+    return applyWindowsStartup({
       coreEntry,
       dryRun,
+      env,
+      homeDir,
       mode,
       nodePath,
       runCommand,
@@ -114,12 +117,19 @@ export function getBackgroundServiceStatus(options = {}) {
     };
   }
   if (platform === "win32") {
+    const configPath = windowsStartupPath({ env, homeDir });
+    const startupEnabled = fileExists(configPath);
     const taskExists = options.windowsTaskExists || defaultWindowsTaskExists;
+    const legacyTaskEnabled = !startupEnabled && taskExists(WINDOWS_TASK_NAME);
     return {
       supported: true,
-      enabled: taskExists(WINDOWS_TASK_NAME),
-      manager: "Windows Task Scheduler",
-      configPath: `Task Scheduler Library\\${WINDOWS_TASK_NAME}`,
+      enabled: startupEnabled || legacyTaskEnabled,
+      manager: legacyTaskEnabled
+        ? "Windows Task Scheduler (legacy)"
+        : "Windows Startup",
+      configPath: legacyTaskEnabled
+        ? `Task Scheduler Library\\${WINDOWS_TASK_NAME}`
+        : configPath,
     };
   }
   return {
@@ -272,10 +282,11 @@ async function applySystemdService(options) {
   };
 }
 
-async function applyWindowsTask(options) {
-  const configPath = `Task Scheduler Library\\${WINDOWS_TASK_NAME}`;
+async function applyWindowsStartup(options) {
+  const configPath = windowsStartupPath(options);
   if (options.mode === "on-demand") {
     if (!options.dryRun) {
+      await fs.rm(configPath, { force: true });
       await options.runCommand(
         "schtasks",
         ["/Delete", "/TN", WINDOWS_TASK_NAME, "/F"],
@@ -283,32 +294,57 @@ async function applyWindowsTask(options) {
       );
     }
     return {
-      manager: "Windows Task Scheduler",
+      manager: "Windows Startup",
       configPath,
       message: "Background startup is disabled; harnesses will start the server when needed.",
     };
   }
 
-  const taskCommand = `${quoteWindows(options.nodePath)} ${quoteWindows(options.coreEntry)}`;
+  const startupScript = windowsStartupScript({
+    coreEntry: options.coreEntry,
+    nodePath: options.nodePath,
+    serverRoot: options.serverRoot,
+  });
   if (!options.dryRun) {
-    await options.runCommand("schtasks", [
-      "/Create",
-      "/TN",
-      WINDOWS_TASK_NAME,
-      "/SC",
-      "ONLOGON",
-      "/TR",
-      taskCommand,
-      "/F",
-    ]);
+    await fs.mkdir(path.dirname(configPath), { recursive: true });
+    await fs.writeFile(configPath, startupScript, "utf8");
+    await options.runCommand(
+      "schtasks",
+      ["/Delete", "/TN", WINDOWS_TASK_NAME, "/F"],
+      { allowFailure: true }
+    );
     await stopExistingCoreProcesses(options.serverRoot, options.runCommand, options.env);
-    await options.runCommand("schtasks", ["/Run", "/TN", WINDOWS_TASK_NAME]);
+    await options.runCommand("wscript.exe", ["//B", "//NoLogo", configPath]);
   }
   return {
-    manager: "Windows Task Scheduler",
+    manager: "Windows Startup",
     configPath,
     message: "Roblox MCP is registered to run in the background with your computer.",
   };
+}
+
+function windowsStartupPath({ env = process.env, homeDir = os.homedir() } = {}) {
+  const appData = env.APPDATA || path.join(homeDir, "AppData", "Roaming");
+  return path.join(
+    appData,
+    "Microsoft",
+    "Windows",
+    "Start Menu",
+    "Programs",
+    "Startup",
+    WINDOWS_STARTUP_FILE
+  );
+}
+
+function windowsStartupScript({ coreEntry, nodePath, serverRoot }) {
+  return [
+    "Set shell = CreateObject(\"WScript.Shell\")",
+    `shell.CurrentDirectory = "${vbsEscape(serverRoot)}"`,
+    `shell.Environment("PROCESS")("ROBLOX_MCP_SERVER_ROOT") = "${vbsEscape(serverRoot)}"`,
+    `launcher = Chr(34) & "${vbsEscape(nodePath)}" & Chr(34) & " " & Chr(34) & "${vbsEscape(coreEntry)}" & Chr(34)`,
+    "shell.Run launcher, 0, False",
+    "",
+  ].join("\r\n");
 }
 
 function launchdPlist({ coreEntry, logDir, nodePath, serverRoot }) {
@@ -462,6 +498,10 @@ function numericId(value) {
   return Number.isInteger(parsed) && parsed >= 0 ? parsed : null;
 }
 
+function vbsEscape(value) {
+  return String(value).replace(/"/g, '""');
+}
+
 function xmlEscape(value) {
   return String(value)
     .replaceAll("&", "&amp;")
@@ -473,8 +513,4 @@ function xmlEscape(value) {
 
 function systemdQuote(value) {
   return `"${String(value).replaceAll("\\", "\\\\").replaceAll('"', '\\"').replaceAll("%", "%%")}"`;
-}
-
-function quoteWindows(value) {
-  return `"${String(value).replaceAll('"', '\\"')}"`;
 }
