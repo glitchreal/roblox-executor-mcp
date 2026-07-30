@@ -65,6 +65,7 @@ export async function applyBackgroundService(options) {
       nodePath,
       runCommand,
       serverRoot,
+      windowsTaskExists: options.windowsTaskExists,
     });
   }
   if (mode === "on-demand") {
@@ -120,7 +121,7 @@ export function getBackgroundServiceStatus(options = {}) {
     const configPath = windowsStartupPath({ env, homeDir });
     const startupEnabled = fileExists(configPath);
     const taskExists = options.windowsTaskExists || defaultWindowsTaskExists;
-    const legacyTaskEnabled = !startupEnabled && taskExists(WINDOWS_TASK_NAME);
+    const legacyTaskEnabled = taskExists(WINDOWS_TASK_NAME);
     return {
       supported: true,
       enabled: startupEnabled || legacyTaskEnabled,
@@ -284,6 +285,7 @@ async function applySystemdService(options) {
 
 async function applyWindowsStartup(options) {
   const configPath = windowsStartupPath(options);
+  const taskExists = options.windowsTaskExists || defaultWindowsTaskExists;
   if (options.mode === "on-demand") {
     if (!options.dryRun) {
       await fs.rm(configPath, { force: true });
@@ -300,6 +302,23 @@ async function applyWindowsStartup(options) {
     };
   }
 
+  if (taskExists(WINDOWS_TASK_NAME)) {
+    if (!options.dryRun) {
+      await fs.rm(configPath, { force: true });
+      await stopExistingCoreProcesses(options.serverRoot, options.runCommand, options.env);
+      await options.runCommand(
+        "schtasks",
+        ["/Run", "/TN", WINDOWS_TASK_NAME],
+        { allowFailure: true }
+      );
+    }
+    return {
+      manager: "Windows Task Scheduler (legacy)",
+      configPath: `Task Scheduler Library\\${WINDOWS_TASK_NAME}`,
+      message: "Roblox MCP will continue using its existing Windows scheduled task.",
+    };
+  }
+
   const startupScript = windowsStartupScript({
     coreEntry: options.coreEntry,
     nodePath: options.nodePath,
@@ -308,11 +327,6 @@ async function applyWindowsStartup(options) {
   if (!options.dryRun) {
     await fs.mkdir(path.dirname(configPath), { recursive: true });
     await fs.writeFile(configPath, startupScript, "utf8");
-    await options.runCommand(
-      "schtasks",
-      ["/Delete", "/TN", WINDOWS_TASK_NAME, "/F"],
-      { allowFailure: true }
-    );
     await stopExistingCoreProcesses(options.serverRoot, options.runCommand, options.env);
     await options.runCommand("wscript.exe", ["//B", "//NoLogo", configPath]);
   }

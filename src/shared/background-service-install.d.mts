@@ -19,6 +19,7 @@ export function applyBackgroundService(options: {
   homeDir?: string;
   nodePath?: string;
   env?: NodeJS.ProcessEnv;
+  windowsTaskExists?: (taskName: string) => boolean;
   runCommand?: (
     command: string,
     args: string[],

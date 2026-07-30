@@ -568,9 +568,7 @@ test("background service installer starts each native manager immediately", asyn
   assert.match(windowsStartupScript, /CreateObject\("WScript\.Shell"\)/);
   assert.match(windowsStartupScript, /launcher = Chr\(34\)/);
   assert.match(windowsStartupScript, /shell\.Run launcher, 0, False/);
-  assert.ok(windowsCalls.some((call) =>
-    call[0] === "schtasks" && call.includes("/Delete")
-  ));
+  assert.ok(!windowsCalls.some((call) => call[0] === "schtasks"));
   assert.ok(!windowsCalls.some((call) => call.includes("/Create")));
 
   await applyBackgroundService({
@@ -584,6 +582,27 @@ test("background service installer starts each native manager immediately", asyn
     runCommand: async () => undefined,
   });
   await assert.rejects(fs.access(windowsStartupFile));
+
+  const existingTaskCalls = [];
+  const existingTask = await applyBackgroundService({
+    serverRoot: path.join(temporaryRoot, "server"),
+    platform: "win32",
+    homeDir: path.join(temporaryRoot, "win32-existing"),
+    env: {
+      APPDATA: path.join(temporaryRoot, "win32-existing", "AppData", "Roaming"),
+    },
+    windowsTaskExists: (taskName) => taskName === "Roblox MCP",
+    runCommand: async (command, args, options) => {
+      existingTaskCalls.push([command, ...args, options]);
+    },
+  });
+  assert.equal(existingTask.manager, "Windows Task Scheduler (legacy)");
+  assert.match(existingTask.message, /continue using its existing/);
+  assert.ok(existingTaskCalls.some((call) =>
+    call[0] === "schtasks" && call.includes("/Run")
+  ));
+  assert.ok(!existingTaskCalls.some((call) => call.includes("/Delete")));
+  assert.ok(!existingTaskCalls.some((call) => call[0] === "wscript.exe"));
 });
 
 test("launchd setup stops conflicting runtimes before bootstrap and retries transient failures", async () => {

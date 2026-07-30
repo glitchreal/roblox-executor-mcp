@@ -53,9 +53,6 @@ change `USE_GITLAB` in `scripts/repository-source.mjs` to change the default.
 
 The installer opens a guided browser setup. It builds the server, configures selected AI harnesses, optionally installs the packaged Roblox MCP skill and Roblox connector, and can register the shared server to run in the background with your computer.
 
-Administrator access is not required. On Windows, background startup is installed
-for the current user through their Startup folder.
-
 ```bash
 npm run install:harnesses
 ```
